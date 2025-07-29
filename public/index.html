@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Crypto Futures Dashboard</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body class="bg-gray-900 text-white">
+<div class="container mx-auto p-4">
+    <h1 class="text-3xl font-bold mb-4">Futures Trading Dashboard</h1>
+
+    <!-- Price and Signal -->
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">Current Price</h2>
+            <div id="price" class="text-2xl font-bold text-green-500"></div>
+        </div>
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">Signal</h2>
+            <div id="signal" class="text-2xl font-bold"></div>
+            <div id="confidence" class="text-sm"></div>
+        </div>
+    </div>
+
+    <!-- Technical Analysis -->
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">15m Analysis</h2>
+            <div id="15m-data"></div>
+        </div>
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">1h Analysis</h2>
+            <div id="1h-data"></div>
+        </div>
+    </div>
+    <!-- Fibonacci Analysis -->
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">15m Fibonacci</h2>
+            <div id="15m-fib" class="grid grid-cols-2 gap-2"></div>
+        </div>
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">1h Fibonacci</h2>
+            <div id="1h-fib" class="grid grid-cols-2 gap-2"></div>
+        </div>
+    </div>
+
+    <!-- Position Info -->
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">Active Position</h2>
+            <div id="position"></div>
+        </div>
+        <!-- Manual Trading -->
+        <div class="bg-gray-800 p-4 rounded">
+            <h2 class="text-xl mb-2">Manual Trading</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block mb-2">Position Size ($)</label>
+                    <input type="number" id="tradeSize" class="w-full p-2 bg-gray-700 rounded" value="100">
+                </div>
+                <div>
+                    <label class="block mb-2">Leverage</label>
+                    <input type="number" id="leverage" class="w-full p-2 bg-gray-700 rounded" value="10">
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <button onclick="placeTrade('long')" class="bg-green-600 p-2 rounded hover:bg-green-700">
+                    Open Long
+                </button>
+                <button onclick="placeTrade('short')" class="bg-red-600 p-2 rounded hover:bg-red-700">
+                    Open Short
+                </button>
+            </div>
+            <button onclick="closePosition()" class="w-full mt-4 bg-yellow-600 p-2 rounded hover:bg-yellow-700">
+                Close Position
+            </button>
+            <button onclick="closeAllPositions()" class="w-full mt-2 bg-red-800 p-2 rounded hover:bg-red-900">
+                Close All Positions
+            </button>
+        </div>
+    </div>
+
+    <!-- Open Positions -->
+    <div class="bg-gray-800 p-4 rounded mb-4">
+        <h2 class="text-xl mb-2">Open Positions</h2>
+        <div id="open-positions" class="overflow-x-auto">
+            <table class="w-full">
+                <thead>
+                <tr class="border-b border-gray-700">
+                    <th class="text-left p-2">ID</th>
+                    <th class="text-left p-2">Direction</th>
+                    <th class="text-left p-2">Size</th>
+                    <th class="text-left p-2">Leverage</th>
+                    <th class="text-left p-2">Entry Price</th>
+                    <th class="text-left p-2">Current PnL</th>
+                    <th class="text-left p-2">Duration</th>
+                    <th class="text-left p-2">Action</th>
+                </tr>
+                </thead>
+                <tbody id="open-positions-table"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Enhanced Performance -->
+    <div class="bg-gray-800 p-4 rounded mb-4">
+        <h2 class="text-xl mb-2">Performance Statistics</h2>
+        <div id="performance-stats" class="grid grid-cols-4 gap-4">
+            <!-- Performance stats will be populated here -->
+        </div>
+    </div>
+
+    <!-- Performance -->
+    <div class="bg-gray-800 p-4 rounded">
+        <h2 class="text-xl mb-2">Performance</h2>
+        <div id="performance"></div>
+    </div>
+
+    <!-- Trade History -->
+    <div class="bg-gray-800 p-4 rounded mt-4">
+        <h2 class="text-xl mb-2">Trade History</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full">
+                <thead>
+                <tr class="border-b border-gray-700">
+                    <th class="text-left p-2">Entry Time</th>
+                    <th class="text-left p-2">Direction</th>
+                    <th class="text-left p-2">Entry Price</th>
+                    <th class="text-left p-2">Exit Price</th>
+                    <th class="text-left p-2">PnL</th>
+                    <th class="text-left p-2">Duration</th>
+                    <th class="text-left p-2">Status</th>
+                    <th class="text-left p-2">Close Reason</th>
+                </tr>
+                </thead>
+                <tbody id="trade-history"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+
+    socket.on('marketUpdate', (data) => {
+        // Update price
+        document.getElementById('price').textContent =
+            `$${data.price.toFixed(2)}`;
+
+        // Update signal
+        const signalElement = document.getElementById('signal');
+        signalElement.textContent = data.signal.signal;
+        signalElement.className = data.signal.signal.includes('BUY') ?
+            'text-2xl font-bold text-green-500' :
+            data.signal.signal.includes('SELL') ?
+                'text-2xl font-bold text-red-500' :
+                'text-2xl font-bold text-gray-500';
+
+        document.getElementById('confidence').textContent =
+            `${data.signal.confidence} - ${data.signal.reason}`;
+
+        // Update timeframes
+        ['15m', '1h'].forEach(interval => {
+            const tf = data.timeframes[interval];
+            document.getElementById(`${interval}-data`).innerHTML = `
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>VWMA: $${tf.vwma?.toFixed(2) || 'N/A'}</div>
+                        <div>RSI: ${tf.rsi?.toFixed(2) || 'N/A'}</div>
+                        <div>Volatility: ${tf.volatility?.toFixed(2)}%</div>
+                        <div>Volume Ratio: ${tf.volume?.ratio?.toFixed(2) || 'N/A'}</div>
+                    </div>
+                `;
+        });
+
+        // Update position with PnL
+        const posElement = document.getElementById('position');
+        if (data.position.status === 'IN_POSITION') {
+            posElement.innerHTML = `
+            <div class="grid grid-cols-2 gap-2">
+                <div>Type: ${data.position.direction}</div>
+                <div>Size: $${data.position.size.toFixed(2)}</div>
+                <div>Entry: $${data.position.entryPrice.toFixed(2)}</div>
+                <div>Stop Loss: $${data.position.stopLoss.toFixed(2)}</div>
+                <div>Take Profit: $${data.position.takeProfit.toFixed(2)}</div>
+                <div>Leverage: ${data.position.leverage}x</div>
+                <div>PnL: <span class="${data.position.pnl >= 0 ? 'text-green-500' : 'text-red-500'}">
+                    ${data.position.pnl.toFixed(2)}%
+                </span></div>
+                <div>Duration: ${data.position.duration}</div>
+            </div>
+        `;
+
+            // Enable close button when position is active
+            document.querySelector('button[onclick="closePosition()"]').disabled = false;
+        } else {
+            posElement.innerHTML = '<div class="text-gray-500">No active position</div>';
+            // Disable close button when no position
+            document.querySelector('button[onclick="closePosition()"]').disabled = true;
+        }
+
+        // Update open positions table
+        const openPositionsTable = document.getElementById('open-positions-table');
+        if (data.openPositions && data.openPositions.length > 0) {
+            openPositionsTable.innerHTML = data.openPositions.map(position => {
+                const duration = position.entryTime ? 
+                    Math.floor((Date.now() - new Date(position.entryTime).getTime()) / 1000 / 60) + 'm' : 'N/A';
+                
+                return `
+                    <tr class="border-b border-gray-700">
+                        <td class="p-2">${position.id}</td>
+                        <td class="p-2">
+                            <span class="${position.direction === 'LONG' ? 'text-green-500' : 'text-red-500'}">
+                                ${position.direction}
+                            </span>
+                        </td>
+                        <td class="p-2">$${position.size.toFixed(2)}</td>
+                        <td class="p-2">${position.leverage}x</td>
+                        <td class="p-2">$${position.entryPrice.toFixed(2)}</td>
+                        <td class="p-2 ${position.currentPnL >= 0 ? 'text-green-500' : 'text-red-500'}">
+                            ${position.currentPnL.toFixed(2)}%
+                        </td>
+                        <td class="p-2">${duration}</td>
+                        <td class="p-2">
+                            <button onclick="closeSpecificPosition('${position.id}')" 
+                                    class="bg-red-600 px-2 py-1 rounded text-sm hover:bg-red-700">
+                                Close
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        } else {
+            openPositionsTable.innerHTML = '<tr><td colspan="8" class="p-2 text-center text-gray-500">No open positions</td></tr>';
+        }
+
+        // Update enhanced performance statistics
+        if (data.performanceStats) {
+            const stats = data.performanceStats;
+            const statsElement = document.getElementById('performance-stats');
+            statsElement.innerHTML = `
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Total Trades</div>
+                    <div class="text-xl font-bold">${stats.totalTrades}</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Total PnL</div>
+                    <div class="text-xl font-bold ${stats.totalPnL >= 0 ? 'text-green-500' : 'text-red-500'}">
+                        ${stats.totalPnL.toFixed(2)}%
+                    </div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Win Rate</div>
+                    <div class="text-xl font-bold">${stats.winRate.toFixed(1)}%</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Open Positions</div>
+                    <div class="text-xl font-bold">${stats.openTrades}</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Winning Trades</div>
+                    <div class="text-xl font-bold text-green-500">${stats.totalWinningTrades}</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Losing Trades</div>
+                    <div class="text-xl font-bold text-red-500">${stats.totalLosingTrades}</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Avg Win</div>
+                    <div class="text-xl font-bold text-green-500">${stats.avgWin.toFixed(2)}%</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Avg Loss</div>
+                    <div class="text-xl font-bold text-red-500">${stats.avgLoss.toFixed(2)}%</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Largest Win</div>
+                    <div class="text-xl font-bold text-green-500">${stats.largestWin.toFixed(2)}%</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Largest Loss</div>
+                    <div class="text-xl font-bold text-red-500">${stats.largestLoss.toFixed(2)}%</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Profit Factor</div>
+                    <div class="text-xl font-bold">${stats.profitFactor.toFixed(2)}</div>
+                </div>
+                <div class="bg-gray-700 p-3 rounded">
+                    <div class="text-sm text-gray-400">Max Drawdown</div>
+                    <div class="text-xl font-bold text-red-500">${stats.maxDrawdown.toFixed(2)}%</div>
+                </div>
+            `;
+        }
+
+        // Update performance
+        const perfElement = document.getElementById('performance');
+        const lastTrade = data.performance[data.performance.length - 1] || {};
+        perfElement.innerHTML = `
+                <div class="grid grid-cols-2 gap-2">
+                    <div>Total Trades: ${data.performance.length}</div>
+                    <div>Last Trade: ${lastTrade.pnl ? lastTrade.pnl.toFixed(2) + '%' : 'N/A'}</div>
+                </div>
+            `;
+        // Update trade history
+        const historyElement = document.getElementById('trade-history');
+        historyElement.innerHTML = data.performance.map(trade => `
+    <tr class="border-b border-gray-700">
+        <td class="p-2">${new Date(trade.entryTime).toLocaleString()}</td>
+        <td class="p-2">
+            <span class="${trade.direction === 'LONG' ? 'text-green-500' : 'text-red-500'}">
+                ${trade.direction}
+            </span>
+        </td>
+        <td class="p-2">$${trade.entryPrice.toFixed(2)}</td>
+        <td class="p-2">${trade.exitPrice ? `$${trade.exitPrice.toFixed(2)}` : '-'}</td>
+        <td class="p-2 ${
+            trade.pnl > 0 ? 'text-green-500' :
+                trade.pnl < 0 ? 'text-red-500' :
+                    'text-gray-500'
+        }">${trade.pnl ? `${trade.pnl.toFixed(2)}%` : '-'}</td>
+        <td class="p-2">${trade.duration}</td>
+        <td class="p-2">
+            <span class="px-2 py-1 rounded text-sm ${
+            trade.status === 'OPEN' ? 'bg-blue-500' : 'bg-gray-500'
+        }">${trade.status}</span>
+        </td>
+        <td class="p-2">${trade.closeReason}</td>
+
+    </tr>
+`).join('');
+
+        // Update Fibonacci data
+        ['15m', '1h'].forEach(interval => {
+            const fib = data.timeframes[interval].fibonacci;
+            const fibElement = document.getElementById(`${interval}-fib`);
+
+            if (fib) {
+                const nearestLevel = fib.nearestLevel;
+                const support = fib.support;
+                const resistance = fib.resistance;
+
+                fibElement.innerHTML = `
+                    <div>Trend: <span class="${fib.trend === 'UPTREND' ? 'text-green-500' : 'text-red-500'}">${fib.trend}</span></div>
+                    <div>Nearest: ${nearestLevel ? `${(nearestLevel.ratio * 100).toFixed(1)}% ($${nearestLevel.price.toFixed(2)})` : 'N/A'}</div>
+                    <div>Support: ${support ? `${(support.ratio * 100).toFixed(1)}% ($${support.price.toFixed(2)})` : 'N/A'}</div>
+                    <div>Resistance: ${resistance ? `${(resistance.ratio * 100).toFixed(1)}% ($${resistance.price.toFixed(2)})` : 'N/A'}</div>
+                    <div>Deviation: ${fib.priceDeviation.toFixed(2)}%</div>
+                `;
+            } else {
+                fibElement.innerHTML = '<div class="text-gray-500">No Fibonacci data available</div>';
+            }
+        });
+
+        if (data.signalHistory) {
+            const historyElement = document.getElementById('signal-history');
+            historyElement.innerHTML = data.signalHistory.map(signal => `
+        <tr class="border-b border-gray-700">
+            <td class="p-2">${new Date(signal.timestamp).toLocaleString()}</td>
+            <td class="p-2">
+                <span class="${
+                signal.signal.includes('BUY') ? 'text-green-500' :
+                    signal.signal.includes('SELL') ? 'text-red-500' :
+                        'text-gray-500'
+            }">
+                    ${signal.signal}
+                </span>
+            </td>
+            <td class="p-2">${signal.confidence}</td>
+            <td class="p-2">$${signal.price.toFixed(2)}</td>
+            <td class="p-2">${signal.reason}</td>
+        </tr>
+    `).join('');
+        }
+
+    });
+
+    async function placeTrade(type) {
+        const size = document.getElementById('tradeSize').value;
+        const leverage = document.getElementById('leverage').value;
+
+        try {
+            const response = await fetch('/trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, size, leverage })
+            });
+            const result = await response.json();
+            alert(result.message);
+        } catch (error) {
+            alert('Error placing trade');
+        }
+    }
+
+    async function closePosition() {
+        try {
+            const response = await fetch('/close', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'Manual close' })
+            });
+            const result = await response.json();
+            alert(result.message);
+        } catch (error) {
+            alert('Error closing position');
+        }
+    }
+
+    async function closeSpecificPosition(positionId) {
+        try {
+            const response = await fetch(`/close/${positionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'Manual close specific' })
+            });
+            const result = await response.json();
+            alert(result.message);
+        } catch (error) {
+            alert('Error closing position');
+        }
+    }
+
+    async function closeAllPositions() {
+        try {
+            const response = await fetch('/close-all', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'Manual close all' })
+            });
+            const result = await response.json();
+            alert(result.message);
+        } catch (error) {
+            alert('Error closing all positions');
+        }
+    }
+
+</script>
+</body>
+</html>
