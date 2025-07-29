@@ -147,7 +147,7 @@
     socket.on('marketUpdate', (data) => {
         // Update price
         document.getElementById('price').textContent =
-            `$${data.price.toFixed(2)}`;
+            `$${data.price}`;
 
         // Update signal
         const signalElement = document.getElementById('signal');
@@ -204,9 +204,9 @@
         const openPositionsTable = document.getElementById('open-positions-table');
         if (data.openPositions && data.openPositions.length > 0) {
             openPositionsTable.innerHTML = data.openPositions.map(position => {
-                const duration = position.entryTime ? 
+                const duration = position.entryTime ?
                     Math.floor((Date.now() - new Date(position.entryTime).getTime()) / 1000 / 60) + 'm' : 'N/A';
-                
+
                 return `
                     <tr class="border-b border-gray-700">
                         <td class="p-2">${position.id}</td>
@@ -223,7 +223,7 @@
                         </td>
                         <td class="p-2">${duration}</td>
                         <td class="p-2">
-                            <button onclick="closeSpecificPosition('${position.id}')" 
+                            <button onclick="closeSpecificPosition('${position.id}')"
                                     class="bg-red-600 px-2 py-1 rounded text-sm hover:bg-red-700">
                                 Close
                             </button>

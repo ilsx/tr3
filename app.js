@@ -6,11 +6,13 @@ const http = require('http');
 const socketIo = require('socket.io');
 const fs = require('fs').promises;
 const path = require('path');
+const dotenv = require('dotenv');
 
+dotenv.config();
 // =============== CONFIGURATION ===============
 const CONFIG = {
     // Market Data Config
-    SYMBOL: 'adausdt',
+    SYMBOL: process.env.PAIR,
     TIMEFRAMES: {
         '15m': { period: 9 },   // 9 MA for shorter timeframe
         '1h': { period: 21 }    // 21 MA for longer timeframe
