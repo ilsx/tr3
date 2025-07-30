@@ -1,225 +1,639 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Crypto Futures Dashboard</title>
+    <title>Multi-Pair Crypto Futures Dashboard</title>
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body class="bg-gray-900 text-white">
 <div class="container mx-auto p-4">
-    <h1 class="text-3xl font-bold mb-4">Futures Trading Dashboard</h1>
+    <!-- Header with Pair Selection -->
+    <div class="mb-6">
+        <h1 class="text-3xl font-bold mb-4">Multi-Pair Futures Trading Dashboard</h1>
 
-    <!-- Price and Signal -->
-    <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">Current Price</h2>
-            <div id="price" class="text-2xl font-bold text-green-500"></div>
-        </div>
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">Signal</h2>
-            <div id="signal" class="text-2xl font-bold"></div>
-            <div id="confidence" class="text-sm"></div>
-        </div>
-    </div>
-
-    <!-- Technical Analysis -->
-    <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">15m Analysis</h2>
-            <div id="15m-data"></div>
-        </div>
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">1h Analysis</h2>
-            <div id="1h-data"></div>
-        </div>
-    </div>
-    <!-- Fibonacci Analysis -->
-    <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">15m Fibonacci</h2>
-            <div id="15m-fib" class="grid grid-cols-2 gap-2"></div>
-        </div>
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">1h Fibonacci</h2>
-            <div id="1h-fib" class="grid grid-cols-2 gap-2"></div>
-        </div>
-    </div>
-
-    <!-- Position Info -->
-    <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">Active Position</h2>
-            <div id="position"></div>
-        </div>
-        <!-- Manual Trading -->
-        <div class="bg-gray-800 p-4 rounded">
-            <h2 class="text-xl mb-2">Manual Trading</h2>
-            <div class="grid grid-cols-2 gap-4">
+        <div class="bg-gray-800 p-4 rounded mb-4">
+            <div class="flex items-center gap-4 flex-wrap">
                 <div>
-                    <label class="block mb-2">Position Size ($)</label>
-                    <input type="number" id="tradeSize" class="w-full p-2 bg-gray-700 rounded" value="100">
+                    <label class="block text-sm font-medium mb-1">Select Trading Pair:</label>
+                    <select id="pairSelect" class="bg-gray-700 text-white p-2 rounded min-w-32">
+                        <option value="">Loading pairs...</option>
+                    </select>
                 </div>
+
                 <div>
-                    <label class="block mb-2">Leverage</label>
-                    <input type="number" id="leverage" class="w-full p-2 bg-gray-700 rounded" value="10">
+                    <label class="block text-sm font-medium mb-1">Or Enter Custom Pair:</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="customPair" placeholder="e.g., BTCUSDT"
+                               class="bg-gray-700 text-white p-2 rounded" style="min-width: 120px">
+                        <button onclick="switchToPair(document.getElementById('customPair').value)"
+                                class="bg-blue-600 px-4 py-2 rounded hover:bg-blue-700">
+                            Track
+                        </button>
+                    </div>
+                </div>
+
+                <div class="ml-auto">
+                    <div class="text-sm">
+                        <div>Current Pair: <span id="currentPair" class="font-bold text-green-400">None</span></div>
+                        <div>Connection: <span id="connectionStatus" class="font-bold text-yellow-400">Connecting...</span></div>
+                    </div>
                 </div>
             </div>
-            <div class="grid grid-cols-2 gap-4 mt-4">
-                <button onclick="placeTrade('long')" class="bg-green-600 p-2 rounded hover:bg-green-700">
-                    Open Long
+        </div>
+
+        <!-- Active Pairs Display -->
+        <div class="bg-gray-800 p-4 rounded mb-4">
+            <h3 class="text-lg font-bold mb-2">Active Pairs</h3>
+            <div id="activePairs" class="flex flex-wrap gap-2">
+                <span class="text-gray-500">Loading...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Dashboard Content -->
+    <div id="dashboardContent" class="hidden">
+        <!-- Price and Signal -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">Current Price</h2>
+                <div id="price" class="text-2xl font-bold text-green-500">Loading...</div>
+            </div>
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">Signal</h2>
+                <div id="signal" class="text-2xl font-bold">Loading...</div>
+                <div id="confidence" class="text-sm">Initializing...</div>
+            </div>
+        </div>
+
+        <!-- Technical Analysis -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">15m Analysis</h2>
+                <div id="15m-data">Loading...</div>
+            </div>
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">1h Analysis</h2>
+                <div id="1h-data">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Fibonacci Analysis -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">15m Fibonacci</h2>
+                <div id="15m-fib" class="grid grid-cols-2 gap-2">Loading...</div>
+            </div>
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">1h Fibonacci</h2>
+                <div id="1h-fib" class="grid grid-cols-2 gap-2">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Position Info and Manual Trading -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">Active Position</h2>
+                <div id="position">No active position</div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded">
+                <h2 class="text-xl mb-2">Manual Trading</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block mb-2">Position Size ($)</label>
+                        <input type="number" id="tradeSize" class="w-full p-2 bg-gray-700 rounded" value="100">
+                    </div>
+                    <div>
+                        <label class="block mb-2">Leverage</label>
+                        <input type="number" id="leverage" class="w-full p-2 bg-gray-700 rounded" value="10">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4 mt-4">
+                    <button onclick="placeTrade('long')" class="bg-green-600 p-2 rounded hover:bg-green-700">
+                        Open Long
+                    </button>
+                    <button onclick="placeTrade('short')" class="bg-red-600 p-2 rounded hover:bg-red-700">
+                        Open Short
+                    </button>
+                </div>
+                <button onclick="closePosition()" class="w-full mt-4 bg-yellow-600 p-2 rounded hover:bg-yellow-700">
+                    Close Position
                 </button>
-                <button onclick="placeTrade('short')" class="bg-red-600 p-2 rounded hover:bg-red-700">
-                    Open Short
+                <button onclick="closeAllPositions()" class="w-full mt-2 bg-red-800 p-2 rounded hover:bg-red-900">
+                    Close All Positions
                 </button>
             </div>
-            <button onclick="closePosition()" class="w-full mt-4 bg-yellow-600 p-2 rounded hover:bg-yellow-700">
-                Close Position
-            </button>
-            <button onclick="closeAllPositions()" class="w-full mt-2 bg-red-800 p-2 rounded hover:bg-red-900">
-                Close All Positions
-            </button>
+        </div>
+
+        <!-- Open Positions -->
+        <div class="bg-gray-800 p-4 rounded mb-4">
+            <h2 class="text-xl mb-2">Open Positions</h2>
+            <div id="open-positions" class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                    <tr class="border-b border-gray-700">
+                        <th class="text-left p-2">ID</th>
+                        <th class="text-left p-2">Direction</th>
+                        <th class="text-left p-2">Size</th>
+                        <th class="text-left p-2">Leverage</th>
+                        <th class="text-left p-2">Entry Price</th>
+                        <th class="text-left p-2">Current PnL</th>
+                        <th class="text-left p-2">Duration</th>
+                        <th class="text-left p-2">Action</th>
+                    </tr>
+                    </thead>
+                    <tbody id="open-positions-table">
+                    <tr><td colspan="8" class="p-2 text-center text-gray-500">No open positions</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Enhanced Performance -->
+        <div class="bg-gray-800 p-4 rounded mb-4">
+            <h2 class="text-xl mb-2">Performance Statistics</h2>
+            <div id="performance-stats" class="grid grid-cols-4 gap-4">
+                <div class="text-center text-gray-500">No data available</div>
+            </div>
+        </div>
+
+        <!-- Trade History -->
+        <div class="bg-gray-800 p-4 rounded mt-4">
+            <h2 class="text-xl mb-2">Trade History</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                    <tr class="border-b border-gray-700">
+                        <th class="text-left p-2">Entry Time</th>
+                        <th class="text-left p-2">Direction</th>
+                        <th class="text-left p-2">Entry Price</th>
+                        <th class="text-left p-2">Exit Price</th>
+                        <th class="text-left p-2">PnL</th>
+                        <th class="text-left p-2">Duration</th>
+                        <th class="text-left p-2">Status</th>
+                        <th class="text-left p-2">Close Reason</th>
+                    </tr>
+                    </thead>
+                    <tbody id="trade-history">
+                    <tr><td colspan="8" class="p-2 text-center text-gray-500">No trade history</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
-    <!-- Open Positions -->
-    <div class="bg-gray-800 p-4 rounded mb-4">
-        <h2 class="text-xl mb-2">Open Positions</h2>
-        <div id="open-positions" class="overflow-x-auto">
-            <table class="w-full">
-                <thead>
-                <tr class="border-b border-gray-700">
-                    <th class="text-left p-2">ID</th>
-                    <th class="text-left p-2">Direction</th>
-                    <th class="text-left p-2">Size</th>
-                    <th class="text-left p-2">Leverage</th>
-                    <th class="text-left p-2">Entry Price</th>
-                    <th class="text-left p-2">Current PnL</th>
-                    <th class="text-left p-2">Duration</th>
-                    <th class="text-left p-2">Action</th>
-                </tr>
-                </thead>
-                <tbody id="open-positions-table"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Enhanced Performance -->
-    <div class="bg-gray-800 p-4 rounded mb-4">
-        <h2 class="text-xl mb-2">Performance Statistics</h2>
-        <div id="performance-stats" class="grid grid-cols-4 gap-4">
-            <!-- Performance stats will be populated here -->
-        </div>
-    </div>
-
-    <!-- Performance -->
-    <div class="bg-gray-800 p-4 rounded">
-        <h2 class="text-xl mb-2">Performance</h2>
-        <div id="performance"></div>
-    </div>
-
-    <!-- Trade History -->
-    <div class="bg-gray-800 p-4 rounded mt-4">
-        <h2 class="text-xl mb-2">Trade History</h2>
-        <div class="overflow-x-auto">
-            <table class="w-full">
-                <thead>
-                <tr class="border-b border-gray-700">
-                    <th class="text-left p-2">Entry Time</th>
-                    <th class="text-left p-2">Direction</th>
-                    <th class="text-left p-2">Entry Price</th>
-                    <th class="text-left p-2">Exit Price</th>
-                    <th class="text-left p-2">PnL</th>
-                    <th class="text-left p-2">Duration</th>
-                    <th class="text-left p-2">Status</th>
-                    <th class="text-left p-2">Close Reason</th>
-                </tr>
-                </thead>
-                <tbody id="trade-history"></tbody>
-            </table>
-        </div>
+    <!-- Loading/No Pair Selected Message -->
+    <div id="noDataMessage" class="bg-gray-800 p-8 rounded text-center">
+        <h2 class="text-2xl mb-4">Select a Trading Pair to Begin</h2>
+        <p class="text-gray-400">Choose a pair from the dropdown above or enter a custom pair to start tracking.</p>
     </div>
 </div>
 
 <script>
-    const socket = io();
+    let socket;
+    let currentPair = null;
+    let availablePairs = [];
 
-    socket.on('marketUpdate', (data) => {
+    console.log('Initializing Multi-Pair Trading Dashboard...');
+
+    // Initialize the application
+    async function initializeApp() {
+        console.log('Starting app initialization...');
+
+        try {
+            // Initialize Socket.IO first
+            initializeSocket();
+
+            // Load available pairs
+            await loadAvailablePairs();
+
+            // Load active pairs
+            await loadActivePairs();
+
+            // Check URL parameters for initial pair
+            const urlParams = new URLSearchParams(window.location.search);
+            const initialPair = urlParams.get('pair');
+            if (initialPair) {
+                console.log(`Loading initial pair from URL: ${initialPair}`);
+                switchToPair(initialPair);
+            }
+
+            console.log('App initialization completed successfully');
+
+        } catch (error) {
+            console.error('Failed to initialize app:', error);
+            showError('Failed to initialize application: ' + error.message);
+        }
+    }
+
+    // Load available pairs from server
+    async function loadAvailablePairs() {
+        console.log('Loading available pairs...');
+
+        try {
+            const response = await fetch('/pairs');
+            console.log('Pairs API response status:', response.status);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            console.log('Pairs data received:', data);
+
+            if (data.success && data.pairs && Array.isArray(data.pairs)) {
+                availablePairs = data.pairs;
+                populatePairSelect(data.pairs, data.defaultPairs || []);
+                console.log(`Successfully loaded ${data.pairs.length} trading pairs`);
+            } else {
+                throw new Error('Invalid pairs data received from server');
+            }
+        } catch (error) {
+            console.error('Error loading pairs:', error);
+
+            // Use fallback pairs
+            availablePairs = ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT'];
+            populatePairSelect(availablePairs, availablePairs);
+            showError('Failed to load pairs from server, using fallback pairs: ' + error.message);
+        }
+    }
+
+    // Populate the pair selection dropdown
+    function populatePairSelect(pairs, defaultPairs = []) {
+        console.log('Populating pair select with', pairs.length, 'pairs');
+
+        const select = document.getElementById('pairSelect');
+        if (!select) {
+            console.error('Pair select element not found');
+            return;
+        }
+
+        select.innerHTML = '<option value="">Select a pair...</option>';
+
+        // Add default pairs first
+        if (defaultPairs && defaultPairs.length > 0) {
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = 'Popular Pairs';
+            defaultPairs.forEach(pair => {
+                const option = document.createElement('option');
+                option.value = pair;
+                option.textContent = pair;
+                optgroup.appendChild(option);
+            });
+            select.appendChild(optgroup);
+        }
+
+        // Add all other pairs
+        const otherPairs = pairs.filter(pair => !defaultPairs.includes(pair));
+        if (otherPairs.length > 0) {
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = 'All Pairs';
+            otherPairs.forEach(pair => {
+                const option = document.createElement('option');
+                option.value = pair;
+                option.textContent = pair;
+                optgroup.appendChild(option);
+            });
+            select.appendChild(optgroup);
+        }
+
+        // Add event listener
+        select.addEventListener('change', (e) => {
+            if (e.target.value) {
+                console.log('Pair selected from dropdown:', e.target.value);
+                switchToPair(e.target.value);
+            }
+        });
+
+        console.log('Pair select populated successfully');
+    }
+
+    // Initialize Socket.IO connection
+    function initializeSocket() {
+        console.log('Initializing Socket.IO connection...');
+
+        socket = io();
+
+        socket.on('connect', () => {
+            console.log('Socket.IO connected successfully');
+            updateConnectionStatus('Connected', 'text-green-400');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Socket.IO disconnected');
+            updateConnectionStatus('Disconnected', 'text-red-400');
+        });
+
+        socket.on('connect_error', (error) => {
+            console.error('Socket.IO connection error:', error);
+            updateConnectionStatus('Connection Error', 'text-red-400');
+        });
+
+        socket.on('marketUpdate', (data) => {
+            console.log('Market update received for pair:', data.pair);
+            if (data.pair === currentPair) {
+                updateDashboard(data);
+            }
+        });
+
+        socket.on('subscription-success', (data) => {
+            console.log(`Successfully subscribed to ${data.pair}`);
+            updateConnectionStatus(`Tracking ${data.pair}`, 'text-green-400');
+        });
+
+        socket.on('subscription-error', (data) => {
+            console.error(`Failed to subscribe to ${data.pair}:`, data.error);
+            showError(`Failed to track ${data.pair}: ${data.error}`);
+            updateConnectionStatus('Subscription Failed', 'text-red-400');
+        });
+    }
+
+    // Switch to a different trading pair
+    async function switchToPair(pair) {
+        console.log('Switching to pair:', pair);
+
+        if (!pair || pair === currentPair) {
+            console.log('Invalid pair or already tracking this pair');
+            return;
+        }
+
+        const upperPair = pair.toUpperCase();
+
+        try {
+            // Unsubscribe from current pair
+            if (currentPair && socket) {
+                console.log('Unsubscribing from current pair:', currentPair);
+                socket.emit('unsubscribe-pair', currentPair);
+            }
+
+            // Update current pair
+            currentPair = upperPair;
+            document.getElementById('currentPair').textContent = upperPair;
+
+            // Update URL without reload
+            const url = new URL(window.location);
+            url.searchParams.set('pair', upperPair);
+            window.history.replaceState({}, '', url);
+
+            // Subscribe to new pair
+            if (socket && socket.connected) {
+                console.log('Subscribing to new pair:', upperPair);
+                socket.emit('subscribe-pair', upperPair);
+            } else {
+                console.error('Socket not connected, cannot subscribe to pair');
+                showError('Not connected to server. Please refresh the page.');
+                return;
+            }
+
+            // Show dashboard
+            document.getElementById('dashboardContent').classList.remove('hidden');
+            document.getElementById('noDataMessage').classList.add('hidden');
+
+            // Update pair selector
+            const select = document.getElementById('pairSelect');
+            if (select) {
+                select.value = upperPair;
+            }
+
+            // Clear custom input
+            const customInput = document.getElementById('customPair');
+            if (customInput) {
+                customInput.value = '';
+            }
+
+            updateConnectionStatus(`Connecting to ${upperPair}...`, 'text-yellow-400');
+
+            console.log(`Successfully switched to ${upperPair}`);
+
+        } catch (error) {
+            console.error('Error switching pair:', error);
+            showError(`Failed to switch to ${upperPair}: ${error.message}`);
+        }
+    }
+
+    // Load and display active pairs
+    async function loadActivePairs() {
+        console.log('Loading active pairs...');
+
+        try {
+            const response = await fetch('/active-pairs');
+            const data = await response.json();
+
+            if (data.success) {
+                console.log('Active pairs loaded:', data.pairs);
+                displayActivePairs(data.pairs);
+            } else {
+                console.error('Failed to load active pairs:', data.message);
+            }
+        } catch (error) {
+            console.error('Error loading active pairs:', error);
+            displayActivePairs([]);
+        }
+    }
+
+    // Display active pairs as clickable badges
+    function displayActivePairs(pairs) {
+        const container = document.getElementById('activePairs');
+        if (!container) return;
+
+        if (!pairs || pairs.length === 0) {
+            container.innerHTML = '<span class="text-gray-500">No active pairs</span>';
+            return;
+        }
+
+        container.innerHTML = pairs.map(pair => `
+            <button onclick="switchToPair('${pair}')"
+                    class="px-3 py-1 rounded text-sm font-medium transition-colors ${
+            pair === currentPair
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+        }">
+                ${pair}
+            </button>
+        `).join('');
+    }
+
+    // Update connection status
+    function updateConnectionStatus(status, className) {
+        const element = document.getElementById('connectionStatus');
+        if (element) {
+            element.textContent = status;
+            element.className = `font-bold ${className}`;
+        }
+    }
+
+    // Show error message
+    function showError(message) {
+        console.error('Error:', message);
+
+        // Create a simple toast notification
+        const toast = document.createElement('div');
+        toast.className = 'fixed top-4 right-4 bg-red-600 text-white px-4 py-2 rounded shadow-lg z-50 max-w-md';
+        toast.innerHTML = `
+            <div class="flex items-center justify-between">
+                <span>${message}</span>
+                <button onclick="this.parentElement.parentElement.remove()" class="ml-2 text-white hover:text-gray-200">×</button>
+            </div>
+        `;
+        document.body.appendChild(toast);
+
+        // Remove toast after 8 seconds
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 8000);
+    }
+
+    // Update dashboard with market data
+    function updateDashboard(data) {
+        console.log('Updating dashboard with data for pair:', data.pair);
+
         // Update price
-        document.getElementById('price').textContent =
-            `$${data.price}`;
+        const priceElement = document.getElementById('price');
+        if (priceElement) {
+            priceElement.textContent = data.price ? `$${data.price.toFixed(2)}` : 'N/A';
+        }
 
         // Update signal
         const signalElement = document.getElementById('signal');
-        signalElement.textContent = data.signal.signal;
-        signalElement.className = data.signal.signal.includes('BUY') ?
-            'text-2xl font-bold text-green-500' :
-            data.signal.signal.includes('SELL') ?
-                'text-2xl font-bold text-red-500' :
-                'text-2xl font-bold text-gray-500';
+        if (signalElement && data.signal) {
+            signalElement.textContent = data.signal.signal || 'N/A';
+            signalElement.className = data.signal.signal?.includes('BUY') ?
+                'text-2xl font-bold text-green-500' :
+                data.signal.signal?.includes('SELL') ?
+                    'text-2xl font-bold text-red-500' :
+                    'text-2xl font-bold text-gray-500';
+        }
 
-        document.getElementById('confidence').textContent =
-            `${data.signal.confidence} - ${data.signal.reason}`;
+        const confidenceElement = document.getElementById('confidence');
+        if (confidenceElement && data.signal) {
+            confidenceElement.textContent = `${data.signal.confidence || 'N/A'} - ${data.signal.reason || 'N/A'}`;
+        }
 
         // Update timeframes
         ['15m', '1h'].forEach(interval => {
-            const tf = data.timeframes[interval];
-            document.getElementById(`${interval}-data`).innerHTML = `
+            const tf = data.timeframes?.[interval];
+            const element = document.getElementById(`${interval}-data`);
+            if (element && tf) {
+                element.innerHTML = `
                     <div class="grid grid-cols-2 gap-2">
                         <div>VWMA: $${tf.vwma?.toFixed(2) || 'N/A'}</div>
                         <div>RSI: ${tf.rsi?.toFixed(2) || 'N/A'}</div>
-                        <div>Volatility: ${tf.volatility?.toFixed(2)}%</div>
+                        <div>Volatility: ${tf.volatility?.toFixed(2) || 0}%</div>
                         <div>Volume Ratio: ${tf.volume?.ratio?.toFixed(2) || 'N/A'}</div>
                     </div>
                 `;
+            }
         });
 
-        // Update position with PnL
-        const posElement = document.getElementById('position');
-        if (data.position.status === 'IN_POSITION') {
-            posElement.innerHTML = `
-            <div class="grid grid-cols-2 gap-2">
-                <div>Type: ${data.position.direction}</div>
-                <div>Size: $${data.position.size.toFixed(2)}</div>
-                <div>Entry: $${data.position.entryPrice.toFixed(2)}</div>
-                <div>Stop Loss: $${data.position.stopLoss.toFixed(2)}</div>
-                <div>Take Profit: $${data.position.takeProfit.toFixed(2)}</div>
-                <div>Leverage: ${data.position.leverage}x</div>
-                <div>PnL: <span class="${data.position.pnl >= 0 ? 'text-green-500' : 'text-red-500'}">
-                    ${data.position.pnl.toFixed(2)}%
-                </span></div>
-                <div>Duration: ${data.position.duration}</div>
-            </div>
-        `;
+        // Update Fibonacci data
+        ['15m', '1h'].forEach(interval => {
+            const fib = data.timeframes?.[interval]?.fibonacci;
+            const fibElement = document.getElementById(`${interval}-fib`);
 
-            // Enable close button when position is active
-            document.querySelector('button[onclick="closePosition()"]').disabled = false;
-        } else {
-            posElement.innerHTML = '<div class="text-gray-500">No active position</div>';
-            // Disable close button when no position
-            document.querySelector('button[onclick="closePosition()"]').disabled = true;
+            if (fibElement) {
+                if (fib) {
+                    const nearestLevel = fib.nearestLevel;
+                    const support = fib.support;
+                    const resistance = fib.resistance;
+
+                    fibElement.innerHTML = `
+                        <div>Trend: <span class="${fib.trend === 'UPTREND' ? 'text-green-500' : 'text-red-500'}">${fib.trend}</span></div>
+                        <div>Nearest: ${nearestLevel ? `${(nearestLevel.ratio * 100).toFixed(1)}% ($${nearestLevel.price.toFixed(2)})` : 'N/A'}</div>
+                        <div>Support: ${support ? `${(support.ratio * 100).toFixed(1)}% ($${support.price.toFixed(2)})` : 'N/A'}</div>
+                        <div>Resistance: ${resistance ? `${(resistance.ratio * 100).toFixed(1)}% ($${resistance.price.toFixed(2)})` : 'N/A'}</div>
+                        <div>Deviation: ${(fib.priceDeviation || 0).toFixed(2)}%</div>
+                    `;
+                } else {
+                    fibElement.innerHTML = '<div class="text-gray-500">No Fibonacci data available</div>';
+                }
+            }
+        });
+
+        // Update position
+        const posElement = document.getElementById('position');
+        if (posElement) {
+            if (data.position?.status === 'IN_POSITION') {
+                posElement.innerHTML = `
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>Type: ${data.position.direction}</div>
+                        <div>Size: $${data.position.size?.toFixed(2) || 'N/A'}</div>
+                        <div>Entry: $${data.position.entryPrice?.toFixed(2) || 'N/A'}</div>
+                        <div>Stop Loss: $${data.position.stopLoss?.toFixed(2) || 'N/A'}</div>
+                        <div>Take Profit: $${data.position.takeProfit?.toFixed(2) || 'N/A'}</div>
+                        <div>Leverage: ${data.position.leverage || 'N/A'}x</div>
+                        <div>PnL: <span class="${(data.position.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
+                            ${(data.position.pnl || 0).toFixed(2)}%
+                        </span></div>
+                        <div>Duration: ${data.position.duration || 'N/A'}</div>
+                    </div>
+                `;
+            } else {
+                posElement.innerHTML = '<div class="text-gray-500">No active position</div>';
+            }
         }
 
-        // Update open positions table
-        const openPositionsTable = document.getElementById('open-positions-table');
-        if (data.openPositions && data.openPositions.length > 0) {
-            openPositionsTable.innerHTML = data.openPositions.map(position => {
+        // Update other sections...
+        updatePerformanceStats(data.performanceStats);
+        updateOpenPositions(data.openPositions);
+        updateTradeHistory(data.performance);
+
+        // Update active pairs periodically
+        loadActivePairs();
+    }
+
+    // Update performance statistics
+    function updatePerformanceStats(stats) {
+        const statsElement = document.getElementById('performance-stats');
+        if (!statsElement || !stats) return;
+
+        statsElement.innerHTML = `
+            <div class="bg-gray-700 p-3 rounded">
+                <div class="text-sm text-gray-400">Total Trades</div>
+                <div class="text-xl font-bold">${stats.totalTrades || 0}</div>
+            </div>
+            <div class="bg-gray-700 p-3 rounded">
+                <div class="text-sm text-gray-400">Total PnL</div>
+                <div class="text-xl font-bold ${(stats.totalPnL || 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
+                    ${(stats.totalPnL || 0).toFixed(2)}%
+                </div>
+            </div>
+            <div class="bg-gray-700 p-3 rounded">
+                <div class="text-sm text-gray-400">Win Rate</div>
+                <div class="text-xl font-bold">${(stats.winRate || 0).toFixed(1)}%</div>
+            </div>
+            <div class="bg-gray-700 p-3 rounded">
+                <div class="text-sm text-gray-400">Open Positions</div>
+                <div class="text-xl font-bold">${stats.openTrades || 0}</div>
+            </div>
+        `;
+    }
+
+    // Update open positions table
+    function updateOpenPositions(positions) {
+        const tableElement = document.getElementById('open-positions-table');
+        if (!tableElement) return;
+
+        if (positions && positions.length > 0) {
+            tableElement.innerHTML = positions.map(position => {
                 const duration = position.entryTime ?
                     Math.floor((Date.now() - new Date(position.entryTime).getTime()) / 1000 / 60) + 'm' : 'N/A';
 
                 return `
                     <tr class="border-b border-gray-700">
-                        <td class="p-2">${position.id}</td>
+                        <td class="p-2">${(position.id || '').substring(0, 8)}...</td>
                         <td class="p-2">
                             <span class="${position.direction === 'LONG' ? 'text-green-500' : 'text-red-500'}">
-                                ${position.direction}
+                                ${position.direction || 'N/A'}
                             </span>
                         </td>
-                        <td class="p-2">$${position.size.toFixed(2)}</td>
-                        <td class="p-2">${position.leverage}x</td>
-                        <td class="p-2">$${position.entryPrice.toFixed(2)}</td>
-                        <td class="p-2 ${position.currentPnL >= 0 ? 'text-green-500' : 'text-red-500'}">
-                            ${position.currentPnL.toFixed(2)}%
+                        <td class="p-2">$${(position.size || 0).toFixed(2)}</td>
+                        <td class="p-2">${position.leverage || 'N/A'}x</td>
+                        <td class="p-2">$${(position.entryPrice || 0).toFixed(2)}</td>
+                        <td class="p-2 ${(position.currentPnL || 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
+                            ${(position.currentPnL || 0).toFixed(2)}%
                         </td>
                         <td class="p-2">${duration}</td>
                         <td class="p-2">
@@ -232,208 +646,335 @@
                 `;
             }).join('');
         } else {
-            openPositionsTable.innerHTML = '<tr><td colspan="8" class="p-2 text-center text-gray-500">No open positions</td></tr>';
+            tableElement.innerHTML = '<tr><td colspan="8" class="p-2 text-center text-gray-500">No open positions</td></tr>';
         }
+    }
 
-        // Update enhanced performance statistics
-        if (data.performanceStats) {
-            const stats = data.performanceStats;
-            const statsElement = document.getElementById('performance-stats');
-            statsElement.innerHTML = `
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Total Trades</div>
-                    <div class="text-xl font-bold">${stats.totalTrades}</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Total PnL</div>
-                    <div class="text-xl font-bold ${stats.totalPnL >= 0 ? 'text-green-500' : 'text-red-500'}">
-                        ${stats.totalPnL.toFixed(2)}%
-                    </div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Win Rate</div>
-                    <div class="text-xl font-bold">${stats.winRate.toFixed(1)}%</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Open Positions</div>
-                    <div class="text-xl font-bold">${stats.openTrades}</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Winning Trades</div>
-                    <div class="text-xl font-bold text-green-500">${stats.totalWinningTrades}</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Losing Trades</div>
-                    <div class="text-xl font-bold text-red-500">${stats.totalLosingTrades}</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Avg Win</div>
-                    <div class="text-xl font-bold text-green-500">${stats.avgWin.toFixed(2)}%</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Avg Loss</div>
-                    <div class="text-xl font-bold text-red-500">${stats.avgLoss.toFixed(2)}%</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Largest Win</div>
-                    <div class="text-xl font-bold text-green-500">${stats.largestWin.toFixed(2)}%</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Largest Loss</div>
-                    <div class="text-xl font-bold text-red-500">${stats.largestLoss.toFixed(2)}%</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Profit Factor</div>
-                    <div class="text-xl font-bold">${stats.profitFactor.toFixed(2)}</div>
-                </div>
-                <div class="bg-gray-700 p-3 rounded">
-                    <div class="text-sm text-gray-400">Max Drawdown</div>
-                    <div class="text-xl font-bold text-red-500">${stats.maxDrawdown.toFixed(2)}%</div>
-                </div>
-            `;
-        }
-
-        // Update performance
-        const perfElement = document.getElementById('performance');
-        const lastTrade = data.performance[data.performance.length - 1] || {};
-        perfElement.innerHTML = `
-                <div class="grid grid-cols-2 gap-2">
-                    <div>Total Trades: ${data.performance.length}</div>
-                    <div>Last Trade: ${lastTrade.pnl ? lastTrade.pnl.toFixed(2) + '%' : 'N/A'}</div>
-                </div>
-            `;
-        // Update trade history
+    // Update trade history
+    function updateTradeHistory(trades) {
         const historyElement = document.getElementById('trade-history');
-        historyElement.innerHTML = data.performance.map(trade => `
-    <tr class="border-b border-gray-700">
-        <td class="p-2">${new Date(trade.entryTime).toLocaleString()}</td>
-        <td class="p-2">
-            <span class="${trade.direction === 'LONG' ? 'text-green-500' : 'text-red-500'}">
-                ${trade.direction}
-            </span>
-        </td>
-        <td class="p-2">$${trade.entryPrice.toFixed(2)}</td>
-        <td class="p-2">${trade.exitPrice ? `$${trade.exitPrice.toFixed(2)}` : '-'}</td>
-        <td class="p-2 ${
-            trade.pnl > 0 ? 'text-green-500' :
-                trade.pnl < 0 ? 'text-red-500' :
-                    'text-gray-500'
-        }">${trade.pnl ? `${trade.pnl.toFixed(2)}%` : '-'}</td>
-        <td class="p-2">${trade.duration}</td>
-        <td class="p-2">
-            <span class="px-2 py-1 rounded text-sm ${
-            trade.status === 'OPEN' ? 'bg-blue-500' : 'bg-gray-500'
-        }">${trade.status}</span>
-        </td>
-        <td class="p-2">${trade.closeReason}</td>
+        if (!historyElement) return;
 
-    </tr>
-`).join('');
-
-        // Update Fibonacci data
-        ['15m', '1h'].forEach(interval => {
-            const fib = data.timeframes[interval].fibonacci;
-            const fibElement = document.getElementById(`${interval}-fib`);
-
-            if (fib) {
-                const nearestLevel = fib.nearestLevel;
-                const support = fib.support;
-                const resistance = fib.resistance;
-
-                fibElement.innerHTML = `
-                    <div>Trend: <span class="${fib.trend === 'UPTREND' ? 'text-green-500' : 'text-red-500'}">${fib.trend}</span></div>
-                    <div>Nearest: ${nearestLevel ? `${(nearestLevel.ratio * 100).toFixed(1)}% ($${nearestLevel.price.toFixed(2)})` : 'N/A'}</div>
-                    <div>Support: ${support ? `${(support.ratio * 100).toFixed(1)}% ($${support.price.toFixed(2)})` : 'N/A'}</div>
-                    <div>Resistance: ${resistance ? `${(resistance.ratio * 100).toFixed(1)}% ($${resistance.price.toFixed(2)})` : 'N/A'}</div>
-                    <div>Deviation: ${fib.priceDeviation.toFixed(2)}%</div>
-                `;
-            } else {
-                fibElement.innerHTML = '<div class="text-gray-500">No Fibonacci data available</div>';
-            }
-        });
-
-        if (data.signalHistory) {
-            const historyElement = document.getElementById('signal-history');
-            historyElement.innerHTML = data.signalHistory.map(signal => `
-        <tr class="border-b border-gray-700">
-            <td class="p-2">${new Date(signal.timestamp).toLocaleString()}</td>
-            <td class="p-2">
-                <span class="${
-                signal.signal.includes('BUY') ? 'text-green-500' :
-                    signal.signal.includes('SELL') ? 'text-red-500' :
+        if (trades && trades.length > 0) {
+            historyElement.innerHTML = trades.map(trade => `
+                <tr class="border-b border-gray-700">
+                    <td class="p-2">${trade.entryTime ? new Date(trade.entryTime).toLocaleString() : 'N/A'}</td>
+                    <td class="p-2">
+                        <span class="${trade.direction === 'LONG' ? 'text-green-500' : 'text-red-500'}">
+                            ${trade.direction || 'N/A'}
+                        </span>
+                    </td>
+                    <td class="p-2">$${(trade.entryPrice || 0).toFixed(2)}</td>
+                    <td class="p-2">${trade.exitPrice ? `$${trade.exitPrice.toFixed(2)}` : '-'}</td>
+                    <td class="p-2 ${
+                (trade.pnl || 0) > 0 ? 'text-green-500' :
+                    (trade.pnl || 0) < 0 ? 'text-red-500' :
                         'text-gray-500'
-            }">
-                    ${signal.signal}
-                </span>
-            </td>
-            <td class="p-2">${signal.confidence}</td>
-            <td class="p-2">$${signal.price.toFixed(2)}</td>
-            <td class="p-2">${signal.reason}</td>
-        </tr>
-    `).join('');
+            }">${trade.pnl ? `${trade.pnl.toFixed(2)}%` : '-'}</td>
+                    <td class="p-2">${trade.duration || 'N/A'}</td>
+                    <td class="p-2">
+                        <span class="px-2 py-1 rounded text-sm ${
+                trade.status === 'OPEN' ? 'bg-blue-500' : 'bg-gray-500'
+            }">${trade.status || 'N/A'}</span>
+                    </td>
+                    <td class="p-2">${trade.closeReason || '-'}</td>
+                </tr>
+            `).join('');
+        } else {
+            historyElement.innerHTML = '<tr><td colspan="8" class="p-2 text-center text-gray-500">No trade history</td></tr>';
+        }
+    }
+
+    // Trading functions
+    async function placeTrade(type) {
+        if (!currentPair) {
+            showError('Please select a trading pair first');
+            return;
         }
 
-    });
-
-    async function placeTrade(type) {
         const size = document.getElementById('tradeSize').value;
         const leverage = document.getElementById('leverage').value;
 
+        if (!size || !leverage) {
+            showError('Please enter position size and leverage');
+            return;
+        }
+
+        console.log(`Placing ${type} trade for ${currentPair}`);
+
         try {
-            const response = await fetch('/trade', {
+            const response = await fetch(`/trade/${currentPair}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type, size, leverage })
+                body: JSON.stringify({ type, size: parseFloat(size), leverage: parseInt(leverage) })
             });
+
             const result = await response.json();
-            alert(result.message);
+            console.log('Trade response:', result);
+
+            if (result.success) {
+                showSuccess(`${type.toUpperCase()} position opened for ${currentPair}`);
+            } else {
+                showError(result.message || 'Failed to place trade');
+            }
         } catch (error) {
-            alert('Error placing trade');
+            console.error('Error placing trade:', error);
+            showError('Error placing trade: ' + error.message);
         }
     }
 
     async function closePosition() {
+        if (!currentPair) {
+            showError('Please select a trading pair first');
+            return;
+        }
+
+        console.log(`Closing position for ${currentPair}`);
+
         try {
-            const response = await fetch('/close', {
+            const response = await fetch(`/close/${currentPair}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ reason: 'Manual close' })
             });
+
             const result = await response.json();
-            alert(result.message);
+            console.log('Close position response:', result);
+
+            if (result.success) {
+                showSuccess(`Position closed for ${currentPair}`);
+            } else {
+                showError(result.message || 'Failed to close position');
+            }
         } catch (error) {
-            alert('Error closing position');
+            console.error('Error closing position:', error);
+            showError('Error closing position: ' + error.message);
         }
     }
 
     async function closeSpecificPosition(positionId) {
+        if (!currentPair) {
+            showError('Please select a trading pair first');
+            return;
+        }
+
+        console.log(`Closing specific position ${positionId} for ${currentPair}`);
+
         try {
-            const response = await fetch(`/close/${positionId}`, {
+            const response = await fetch(`/close/${currentPair}/${positionId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ reason: 'Manual close specific' })
             });
+
             const result = await response.json();
-            alert(result.message);
+            console.log('Close specific position response:', result);
+
+            if (result.success) {
+                showSuccess(`Position ${positionId} closed`);
+            } else {
+                showError(result.message || 'Failed to close position');
+            }
         } catch (error) {
-            alert('Error closing position');
+            console.error('Error closing specific position:', error);
+            showError('Error closing position: ' + error.message);
         }
     }
 
     async function closeAllPositions() {
+        if (!currentPair) {
+            showError('Please select a trading pair first');
+            return;
+        }
+
+        if (!confirm(`Are you sure you want to close ALL positions for ${currentPair}?`)) {
+            return;
+        }
+
+        console.log(`Closing all positions for ${currentPair}`);
+
         try {
-            const response = await fetch('/close-all', {
+            const response = await fetch(`/close-all/${currentPair}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ reason: 'Manual close all' })
             });
+
             const result = await response.json();
-            alert(result.message);
+            console.log('Close all positions response:', result);
+
+            if (result.success) {
+                showSuccess(`All positions closed for ${currentPair}`);
+            } else {
+                showError(result.message || 'Failed to close all positions');
+            }
         } catch (error) {
-            alert('Error closing all positions');
+            console.error('Error closing all positions:', error);
+            showError('Error closing all positions: ' + error.message);
         }
     }
 
+    // Show success message
+    function showSuccess(message) {
+        console.log('Success:', message);
+
+        const toast = document.createElement('div');
+        toast.className = 'fixed top-4 right-4 bg-green-600 text-white px-4 py-2 rounded shadow-lg z-50 max-w-md';
+        toast.innerHTML = `
+            <div class="flex items-center justify-between">
+                <span>${message}</span>
+                <button onclick="this.parentElement.parentElement.remove()" class="ml-2 text-white hover:text-gray-200">×</button>
+            </div>
+        `;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 5000);
+    }
+
+    // Handle Enter key in custom pair input
+    document.addEventListener('DOMContentLoaded', function() {
+        const customPairInput = document.getElementById('customPair');
+        if (customPairInput) {
+            customPairInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    const pair = this.value.trim().toUpperCase();
+                    if (pair) {
+                        console.log('Enter key pressed, switching to pair:', pair);
+                        switchToPair(pair);
+                    }
+                }
+            });
+        }
+    });
+
+    // Start the application when page loads
+    window.addEventListener('load', () => {
+        console.log('Page loaded, initializing app...');
+        initializeApp();
+    });
+
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden && socket && !socket.connected) {
+            console.log('Tab became visible, attempting to reconnect...');
+            socket.connect();
+        }
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+        // Ctrl/Cmd + L for Long position
+        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+            e.preventDefault();
+            placeTrade('long');
+        }
+
+        // Ctrl/Cmd + S for Short position
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            placeTrade('short');
+        }
+
+        // Ctrl/Cmd + C for Close position
+        if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+            e.preventDefault();
+            closePosition();
+        }
+
+        // Escape to clear pair selection
+        if (e.key === 'Escape') {
+            const select = document.getElementById('pairSelect');
+            const input = document.getElementById('customPair');
+            if (select) select.value = '';
+            if (input) input.value = '';
+        }
+    });
+
+    // Auto-refresh active pairs every 30 seconds
+    setInterval(() => {
+        loadActivePairs();
+    }, 30000);
+
+    // Debug information
+    console.log('Multi-Pair Trading Dashboard script loaded');
+    console.log('Available keyboard shortcuts:');
+    console.log('  Ctrl/Cmd + L: Place Long position');
+    console.log('  Ctrl/Cmd + S: Place Short position');
+    console.log('  Ctrl/Cmd + C: Close position');
+    console.log('  Escape: Clear selections');
+
 </script>
+
+<!-- Custom CSS for better styling -->
+<style>
+    @media (max-width: 768px) {
+        .grid-cols-2 {
+            grid-template-columns: 1fr;
+        }
+        .grid-cols-4 {
+            grid-template-columns: repeat(2, 1fr);
+        }
+        .container {
+            padding: 1rem;
+        }
+        .overflow-x-auto {
+            font-size: 0.875rem;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .grid-cols-4 {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    /* Custom scrollbar for tables */
+    .overflow-x-auto::-webkit-scrollbar {
+        height: 6px;
+    }
+
+    .overflow-x-auto::-webkit-scrollbar-track {
+        background: #374151;
+    }
+
+    .overflow-x-auto::-webkit-scrollbar-thumb {
+        background: #6B7280;
+        border-radius: 3px;
+    }
+
+    .overflow-x-auto::-webkit-scrollbar-thumb:hover {
+        background: #9CA3AF;
+    }
+
+    /* Pulse animation for loading states */
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .animate-pulse {
+        animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    /* Smooth transitions */
+    .transition-all {
+        transition: all 0.3s ease;
+    }
+
+    /* Hover effects */
+    .hover-scale:hover {
+        transform: scale(1.05);
+    }
+
+    /* Toast notifications z-index */
+    .z-50 {
+        z-index: 50;
+    }
+</style>
+
 </body>
 </html>

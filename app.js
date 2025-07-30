@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 const axios = require('axios');
-const colors = require('colors');  // For console coloring
+const colors = require('colors');
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -9,33 +9,34 @@ const path = require('path');
 const dotenv = require('dotenv');
 
 dotenv.config();
+
 // =============== CONFIGURATION ===============
 const CONFIG = {
     // Market Data Config
-    SYMBOL: process.env.PAIR,
+    DEFAULT_PAIRS: ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT'],
     TIMEFRAMES: {
-        '15m': { period: 9 },   // 9 MA for shorter timeframe
-        '1h': { period: 21 }    // 21 MA for longer timeframe
+        '15m': { period: 9 },
+        '1h': { period: 21 }
     },
-    BUFFER_SIZE: 100,           // How many candles to store
+    BUFFER_SIZE: 100,
 
     // Risk Management
     RISK: {
-        ACCOUNT_SIZE: 10000,    // Starting capital
-        RISK_PER_TRADE: 0.02,   // 2% risk per trade
-        MAX_POSITION_SIZE: 1000, // Maximum position size in USD
-        BASE_LEVERAGE: 10,      // Default leverage
-        MAX_LEVERAGE: 20,       // Maximum allowed leverage
-        STOP_LOSS_MULTIPLIER: 1.5,  // SL distance based on volatility
-        TAKE_PROFIT_MULTIPLIER: 3,  // TP distance as multiple of SL
+        ACCOUNT_SIZE: 10000,
+        RISK_PER_TRADE: 0.02,
+        MAX_POSITION_SIZE: 1000,
+        BASE_LEVERAGE: 10,
+        MAX_LEVERAGE: 20,
+        STOP_LOSS_MULTIPLIER: 1.5,
+        TAKE_PROFIT_MULTIPLIER: 3,
     },
 
     // Trading Rules
     TRADING: {
-        MIN_VOLATILITY: 5,      // Minimum volatility to trade
-        MAX_VOLATILITY: 50,     // Maximum volatility to trade
-        VOLUME_THRESHOLD: 1.2,   // Volume increase required for trade
-        MIN_CONFIDENCE: 'MEDIUM' // Minimum signal confidence
+        MIN_VOLATILITY: 5,
+        MAX_VOLATILITY: 50,
+        VOLUME_THRESHOLD: 1.2,
+        MIN_CONFIDENCE: 'MEDIUM'
     },
 
     // Technical Settings
@@ -47,30 +48,172 @@ const CONFIG = {
 
     // System Settings
     SYSTEM: {
-        RETRY_DELAY: 1000,      // WebSocket reconnection delay
-        UPDATE_INTERVAL: 1000,   // Console update interval
-        MAX_RETRIES: 3,         // Maximum WebSocket reconnection attempts
-        API_RATE_LIMIT: 1200    // API rate limit per minute
+        RETRY_DELAY: 1000,
+        UPDATE_INTERVAL: 1000,
+        MAX_RETRIES: 3,
+        API_RATE_LIMIT: 1200
     }
 };
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
+
+// Global trackers storage
+const trackers = new Map();
+const globalWebSocket = new Map();
 
 // Serve static files
 app.use(express.static('public'));
 app.use(express.json());
 
+// =============== API ENDPOINTS ===============
+
+// Get available pairs endpoint
+app.get('/pairs', async (req, res) => {
+    try {
+        const response = await axios.get('https://api.binance.com/api/v3/exchangeInfo');
+        const usdtPairs = response.data.symbols
+            .filter(symbol =>
+                symbol.symbol.endsWith('USDT') &&
+                symbol.status === 'TRADING'
+            )
+            .map(symbol => symbol.symbol)
+            .sort();
+
+        res.json({
+            success: true,
+            pairs: usdtPairs,
+            defaultPairs: CONFIG.DEFAULT_PAIRS
+        });
+    } catch (error) {
+        console.error('Error fetching pairs:', error);
+        res.json({
+            success: true,
+            pairs: CONFIG.DEFAULT_PAIRS,
+            defaultPairs: CONFIG.DEFAULT_PAIRS,
+            message: 'Using fallback pairs due to API error'
+        });
+    }
+});
+
+// Get active pairs
+app.get('/active-pairs', (req, res) => {
+    const activePairs = Array.from(trackers.keys());
+    res.json({
+        success: true,
+        pairs: activePairs
+    });
+});
+
+// Start tracking a pair
+app.post('/start-pair/:pair', async (req, res) => {
+    try {
+        const pair = req.params.pair.toUpperCase();
+        console.log(`API call to start tracking ${pair}`.yellow);
+
+        if (trackers.has(pair)) {
+            console.log(`Already tracking ${pair}`.yellow);
+            return res.json({
+                success: true,
+                message: `Already tracking ${pair}`,
+                pair
+            });
+        }
+
+        console.log(`Starting new tracker for ${pair}...`.green);
+        const tracker = new FuturesTracker(pair);
+        trackers.set(pair, tracker);
+
+        // Start the tracker
+        await tracker.start();
+
+        console.log(`Successfully started tracker for ${pair}`.green);
+
+        res.json({
+            success: true,
+            message: `Started tracking ${pair}`,
+            pair
+        });
+
+    } catch (error) {
+        console.error(`Error starting tracker for ${req.params.pair}:`.red, error);
+
+        // Remove failed tracker
+        const pair = req.params.pair.toUpperCase();
+        if (trackers.has(pair)) {
+            trackers.delete(pair);
+        }
+
+        res.status(500).json({
+            success: false,
+            message: `Failed to start tracking ${req.params.pair}: ${error.message}`
+        });
+    }
+});
+
+// Stop tracking a pair
+app.post('/stop-pair/:pair', async (req, res) => {
+    try {
+        const pair = req.params.pair.toUpperCase();
+
+        if (!trackers.has(pair)) {
+            return res.status(404).json({
+                success: false,
+                message: `Not tracking ${pair}`
+            });
+        }
+
+        // Close WebSocket connection for this pair
+        if (globalWebSocket.has(pair)) {
+            globalWebSocket.get(pair).close();
+            globalWebSocket.delete(pair);
+        }
+
+        // Remove tracker
+        trackers.delete(pair);
+
+        res.json({
+            success: true,
+            message: `Stopped tracking ${pair}`,
+            pair
+        });
+
+    } catch (error) {
+        console.error(`Error stopping tracker for ${req.params.pair}:`, error);
+        res.status(500).json({
+            success: false,
+            message: `Failed to stop tracking ${req.params.pair}: ${error.message}`
+        });
+    }
+});
+
 // Manual trade endpoint
-app.post('/trade', (req, res) => {
+app.post('/trade/:pair', async (req, res) => {
+    const { pair } = req.params;
     const { type, size, leverage } = req.body;
 
-    if (!tracker.currentPrice) {
-        return res.json({ success: false, message: 'Price not available' });
+    const tracker = trackers.get(pair.toUpperCase());
+    if (!tracker) {
+        return res.status(404).json({
+            success: false,
+            message: `Tracker for ${pair} not found. Please start tracking this pair first.`
+        });
     }
 
-    // Simulate a manual trade
+    if (!tracker.currentPrice) {
+        return res.status(400).json({
+            success: false,
+            message: 'Price not available for this pair'
+        });
+    }
+
+    // Create manual signal
     const manualSignal = {
         signal: type === 'long' ? 'MANUAL_BUY' : 'MANUAL_SELL',
         confidence: 'HIGH',
@@ -85,25 +228,36 @@ app.post('/trade', (req, res) => {
     );
 
     // Override position size and leverage if provided
-    if (size) position.size = size;
-    if (leverage) position.leverage = leverage;
+    if (size) position.size = parseFloat(size);
+    if (leverage) position.leverage = parseInt(leverage);
+
+    // Add unique ID to position
+    position.id = `${pair}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Execute the trade
-    tracker.tradeExecutor.executeTrade(position);
+    await tracker.tradeExecutor.executePosition(position);
 
     res.json({
         success: true,
-        message: `Manual ${type} position opened`,
+        message: `Manual ${type} position opened for ${pair}`,
         position
     });
 });
 
 // Close position endpoint
-app.post('/close', async (req, res) => {
+app.post('/close/:pair', async (req, res) => {
     try {
+        const { pair } = req.params;
         const { reason = 'Manual close' } = req.body;
 
-        // Check if there's an active position
+        const tracker = trackers.get(pair.toUpperCase());
+        if (!tracker) {
+            return res.status(404).json({
+                success: false,
+                message: `Tracker for ${pair} not found`
+            });
+        }
+
         if (!tracker.positionManager.activePosition) {
             return res.status(400).json({
                 success: false,
@@ -111,7 +265,6 @@ app.post('/close', async (req, res) => {
             });
         }
 
-        // Get current price
         if (!tracker.currentPrice) {
             return res.status(400).json({
                 success: false,
@@ -119,13 +272,12 @@ app.post('/close', async (req, res) => {
             });
         }
 
-        // Close the position
         await tracker.tradeExecutor.closePosition(reason, tracker.currentPrice);
 
-        // Return success response
         res.json({
             success: true,
             message: 'Position closed successfully',
+            pair,
             closingPrice: tracker.currentPrice
         });
 
@@ -139,12 +291,19 @@ app.post('/close', async (req, res) => {
 });
 
 // Close specific position by ID
-app.post('/close/:positionId', async (req, res) => {
+app.post('/close/:pair/:positionId', async (req, res) => {
     try {
-        const { positionId } = req.params;
+        const { pair, positionId } = req.params;
         const { reason = 'Manual close' } = req.body;
 
-        // Get current price
+        const tracker = trackers.get(pair.toUpperCase());
+        if (!tracker) {
+            return res.status(404).json({
+                success: false,
+                message: `Tracker for ${pair} not found`
+            });
+        }
+
         if (!tracker.currentPrice) {
             return res.status(400).json({
                 success: false,
@@ -152,14 +311,16 @@ app.post('/close/:positionId', async (req, res) => {
             });
         }
 
-        // Close the specific position
         const result = await tracker.tradeExecutor.closeSpecificPosition(positionId, reason, tracker.currentPrice);
 
         if (!result.success) {
             return res.status(400).json(result);
         }
 
-        res.json(result);
+        res.json({
+            ...result,
+            pair
+        });
 
     } catch (error) {
         console.error('Error closing specific position:', error);
@@ -171,11 +332,19 @@ app.post('/close/:positionId', async (req, res) => {
 });
 
 // Close all positions endpoint
-app.post('/close-all', async (req, res) => {
+app.post('/close-all/:pair', async (req, res) => {
     try {
+        const { pair } = req.params;
         const { reason = 'Close all positions' } = req.body;
 
-        // Get current price
+        const tracker = trackers.get(pair.toUpperCase());
+        if (!tracker) {
+            return res.status(404).json({
+                success: false,
+                message: `Tracker for ${pair} not found`
+            });
+        }
+
         if (!tracker.currentPrice) {
             return res.status(400).json({
                 success: false,
@@ -183,10 +352,12 @@ app.post('/close-all', async (req, res) => {
             });
         }
 
-        // Close all positions
         const result = await tracker.tradeExecutor.closeAllPositions(reason, tracker.currentPrice);
 
-        res.json(result);
+        res.json({
+            ...result,
+            pair
+        });
 
     } catch (error) {
         console.error('Error closing all positions:', error);
@@ -197,35 +368,71 @@ app.post('/close-all', async (req, res) => {
     }
 });
 
-// Get enhanced performance statistics
-app.get('/performance', (req, res) => {
-    try {
-        const stats = tracker.tradeHistoryManager.getTradeStatistics();
-        const signalStats = tracker.signalHistoryManager.getSignalStats();
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+    console.log('Client connected to dashboard');
 
-        res.json({
-            success: true,
-            tradeStats: stats,
-            signalStats: signalStats
-        });
-    } catch (error) {
-        console.error('Error getting performance stats:', error);
-        res.status(500).json({
-            success: false,
-            message: `Failed to get performance stats: ${error.message}`
-        });
-    }
+    socket.on('subscribe-pair', async (pair) => {
+        try {
+            const upperPair = pair.toUpperCase();
+            console.log(`Client subscribing to ${upperPair}`.cyan);
+
+            // Join room for this pair
+            socket.join(upperPair);
+
+            // Start tracking if not already tracking
+            if (!trackers.has(upperPair)) {
+                console.log(`Auto-starting tracker for ${upperPair}...`.yellow);
+                try {
+                    const tracker = new FuturesTracker(upperPair);
+                    trackers.set(upperPair, tracker);
+                    await tracker.start();
+                    console.log(`Successfully started tracker for ${upperPair}`.green);
+                } catch (startError) {
+                    console.error(`Failed to start tracker for ${upperPair}:`.red, startError);
+                    trackers.delete(upperPair);
+                    socket.emit('subscription-error', {
+                        pair: upperPair,
+                        error: `Failed to start tracker: ${startError.message}`
+                    });
+                    return;
+                }
+            }
+
+            // Send current data immediately if available
+            const tracker = trackers.get(upperPair);
+            if (tracker && tracker.currentPrice) {
+                try {
+                    const dashboardData = tracker.getDashboardData();
+                    socket.emit('marketUpdate', dashboardData);
+                    console.log(`Sent initial data for ${upperPair}`.green);
+                } catch (dataError) {
+                    console.error(`Error getting dashboard data for ${upperPair}:`.red, dataError);
+                }
+            }
+
+            socket.emit('subscription-success', { pair: upperPair });
+            console.log(`Successfully subscribed client to ${upperPair}`.green);
+
+        } catch (error) {
+            console.error(`Error subscribing to ${pair}:`.red, error);
+            socket.emit('subscription-error', {
+                pair,
+                error: error.message
+            });
+        }
+    });
+
+    socket.on('unsubscribe-pair', (pair) => {
+        const upperPair = pair.toUpperCase();
+        console.log(`Client unsubscribing from ${upperPair}`);
+        socket.leave(upperPair);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Client disconnected from dashboard');
+    });
 });
-
-// =============== ERROR HANDLING ===============
-class TradingError extends Error {
-    constructor(message, code, retryable = false) {
-        super(message);
-        this.name = 'TradingError';
-        this.code = code;
-        this.retryable = retryable;
-    }
-}
 
 // =============== UTILITIES ===============
 class CircularBuffer {
@@ -273,7 +480,14 @@ class RateLimiter {
     }
 }
 
-// Will continue with the rest of the code in subsequent parts...
+class TradingError extends Error {
+    constructor(message, code, retryable = false) {
+        super(message);
+        this.name = 'TradingError';
+        this.code = code;
+        this.retryable = retryable;
+    }
+}
 
 // =============== MARKET DATA MANAGEMENT ===============
 class MarketData {
@@ -306,7 +520,6 @@ class MarketData {
 
 // =============== TECHNICAL ANALYSIS ===============
 class TechnicalAnalysis {
-    // Volume Weighted Moving Average
     static calculateVWMA(prices, volumes, period) {
         if (prices.length < period) return null;
 
@@ -321,7 +534,6 @@ class TechnicalAnalysis {
         return sumVolume === 0 ? null : sumVolumePrice / sumVolume;
     }
 
-    // Relative Strength Index
     static calculateRSI(prices, period = CONFIG.TECHNICAL.RSI_PERIOD) {
         if (prices.length <= period) return null;
 
@@ -341,7 +553,6 @@ class TechnicalAnalysis {
         return 100 - (100 / (1 + rs));
     }
 
-    // Historical Volatility
     static calculateVolatility(prices, period = CONFIG.TECHNICAL.VOLATILITY_PERIOD) {
         if (prices.length < period + 1) return 0;
 
@@ -354,7 +565,6 @@ class TechnicalAnalysis {
         return Math.sqrt(sumSquared / period) * 100;
     }
 
-    // Volume Analysis
     static analyzeVolume(volumes, period = CONFIG.TECHNICAL.VOLUME_MA_PERIOD) {
         if (volumes.length < period) return null;
 
@@ -373,38 +583,13 @@ class TechnicalAnalysis {
         };
     }
 
-    // Trend Analysis
-    static analyzeTrend(currentPrice, vwma15m, vwma1h, rsi15m, rsi1h) {
-        const above15m = currentPrice > vwma15m;
-        const above1h = currentPrice > vwma1h;
-
-        if (above15m && above1h) {
-            if (rsi15m < 70 && rsi1h < 70) return 'STRONG_UPTREND';
-            return 'OVERBOUGHT';
-        }
-
-        if (!above15m && !above1h) {
-            if (rsi15m > 30 && rsi1h > 30) return 'STRONG_DOWNTREND';
-            return 'OVERSOLD';
-        }
-
-        if (above15m && !above1h) return 'POTENTIAL_REVERSAL_UP';
-        return 'POTENTIAL_REVERSAL_DOWN';
-    }
-
-
-    // Fibonacci
     static calculateFibonacciLevels(prices, lookbackPeriod = 20) {
         if (prices.length < lookbackPeriod) return null;
 
-        // Get relevant price segment
         const recentPrices = prices.slice(-lookbackPeriod);
-
-        // Find swing high and low
         const high = Math.max(...recentPrices);
         const low = Math.min(...recentPrices);
 
-        // Common Fibonacci ratios
         const ratios = {
             '0': 0,
             '0.236': 0.236,
@@ -415,17 +600,14 @@ class TechnicalAnalysis {
             '1': 1
         };
 
-        // Calculate levels for both uptrend and downtrend
         const isUptrend = recentPrices[recentPrices.length - 1] > recentPrices[0];
         const levels = {};
 
         if (isUptrend) {
-            // Calculate retracement levels from high to low
             Object.entries(ratios).forEach(([key, ratio]) => {
                 levels[key] = high - (high - low) * ratio;
             });
         } else {
-            // Calculate retracement levels from low to high
             Object.entries(ratios).forEach(([key, ratio]) => {
                 levels[key] = low + (high - low) * ratio;
             });
@@ -448,7 +630,6 @@ class TechnicalAnalysis {
         let nearestLevel = null;
         let nearestDistance = Infinity;
 
-        // Find nearest Fibonacci level and setup support/resistance
         Object.entries(levels).forEach(([ratio, level]) => {
             const distance = Math.abs(currentPrice - level);
             if (distance < nearestDistance) {
@@ -467,7 +648,6 @@ class TechnicalAnalysis {
             }
         });
 
-        // Calculate price position relative to nearest level
         const priceDeviation = (Math.abs(currentPrice - nearestLevel.price) / currentPrice) * 100;
 
         return {
@@ -480,9 +660,6 @@ class TechnicalAnalysis {
     }
 }
 
-// Will continue with position management and trade execution...
-
-
 // =============== POSITION MANAGEMENT ===============
 class PositionManager {
     constructor() {
@@ -491,10 +668,7 @@ class PositionManager {
     }
 
     calculatePositionParameters(signal, price, volatility) {
-        // Calculate dynamic leverage based on market conditions
         const leverage = this.calculateDynamicLeverage(volatility, signal.confidence);
-
-        // Calculate position size based on risk parameters
         const riskAmount = this.config.ACCOUNT_SIZE * this.config.RISK_PER_TRADE;
         const stopLossDistance = (volatility * this.config.STOP_LOSS_MULTIPLIER) / 100;
         const positionSize = Math.min(
@@ -502,10 +676,7 @@ class PositionManager {
             this.config.MAX_POSITION_SIZE
         );
 
-        // Determine position direction
         const isLong = signal.signal.includes('BUY');
-
-        // Calculate entry, stop loss, and take profit levels
         const stopLoss = isLong
             ? price * (1 - stopLossDistance)
             : price * (1 + stopLossDistance);
@@ -527,10 +698,7 @@ class PositionManager {
     }
 
     calculateDynamicLeverage(volatility, confidence) {
-        // Reduce leverage as volatility increases
         const volatilityFactor = Math.max(0.2, 1 - (volatility / 100));
-
-        // Adjust based on signal confidence
         const confidenceMultiplier = {
             'HIGH': 1,
             'MEDIUM': 0.7,
@@ -577,84 +745,94 @@ class PositionManager {
 class TradeExecutor {
     constructor(positionManager) {
         this.positionManager = positionManager;
-        this.tradeHistory = [];
         this.tracker = null;
-    }
-
-    async executeTrade(signal, price, marketState) {
-        if (this.positionManager.activePosition) {
-            console.log('Already in position, skipping trade execution'.yellow);
-            return;
-        }
-
-        // Calculate position parameters
-        const position = this.positionManager.calculatePositionParameters(
-            signal,
-            price,
-            marketState.volatility
-        );
-
-        // Log trade plan
-        this.logTradePlan(position);
-
-        // Execute the trade
-        await this.executeTrade(position);
     }
 
     shouldTrade(signal, marketState) {
         // Check if we already have a position
         if (this.positionManager.activePosition) {
-            console.log('Already in position, skipping signal'.gray);
+            return false;
+        }
+
+        // Only trade on strong buy/sell signals, not watch signals
+        if (!signal.signal.includes('STRONG_') && !signal.signal.includes('POTENTIAL_')) {
             return false;
         }
 
         // Check signal confidence
-        if (signal.confidence < this.config.MIN_CONFIDENCE) {
-            console.log('Signal confidence too low'.gray);
+        const confidenceOrder = { 'LOW': 0, 'MEDIUM': 1, 'HIGH': 2 };
+        const minConfidenceLevel = confidenceOrder[CONFIG.TRADING.MIN_CONFIDENCE] || 1;
+        const signalConfidenceLevel = confidenceOrder[signal.confidence] || 0;
+
+        if (signalConfidenceLevel < minConfidenceLevel) {
             return false;
         }
 
         // Check volatility conditions
-        if (marketState.volatility < this.config.MIN_VOLATILITY) {
-            console.log('Volatility too low'.gray);
+        if (marketState.volatility < CONFIG.TRADING.MIN_VOLATILITY) {
             return false;
         }
-        if (marketState.volatility > this.config.MAX_VOLATILITY) {
-            console.log('Volatility too high'.gray);
+        if (marketState.volatility > CONFIG.TRADING.MAX_VOLATILITY) {
             return false;
         }
 
         return true;
     }
 
-    async executeTrade(position) {
-        // Here you would integrate with your exchange's API
-        console.log('Executing trade...'.green);
+    async executeTrade(signal, price, marketState) {
+        // Check if we should actually trade based on signal
+        if (!this.shouldTrade(signal, marketState)) {
+            return;
+        }
 
-        // Simulate trade execution
+        if (this.positionManager.activePosition) {
+            console.log('Already in position, skipping trade execution'.yellow);
+            return;
+        }
+
+        const position = this.positionManager.calculatePositionParameters(
+            signal,
+            price,
+            marketState.volatility
+        );
+
+        // Add unique ID to position
+        position.id = `${this.tracker.symbol}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        this.logTradePlan(position);
+        await this.executePosition(position);
+    }
+
+    async executePosition(position) {
+        console.log(`${this.tracker.symbol}: Executing trade...`.green);
+
         this.positionManager.activePosition = position;
-        this.tradeHistory.push({
-            ...position,
-            status: 'OPEN'
-        });
 
-        console.log('Trade executed successfully'.green);
+        // Add to trade history
+        if (this.tracker && this.tracker.tradeHistoryManager) {
+            await this.tracker.tradeHistoryManager.addTrade({
+                ...position,
+                status: 'OPEN'
+            });
+        }
+
+        console.log(`${this.tracker.symbol}: Trade executed successfully`.green);
     }
 
     async closePosition(reason, price) {
         if (!this.positionManager.activePosition) return;
 
-        console.log(`\nClosing position: ${reason}`.yellow);
+        console.log(`${this.tracker.symbol}: Closing position: ${reason}`.yellow);
 
-        // Calculate PnL
         const pnl = this.positionManager.calculatePnL(price);
         const exitTime = Date.now();
 
-        // Find the most recent open trade
         if (this.tracker && this.tracker.tradeHistoryManager) {
             const trades = this.tracker.tradeHistoryManager.getAllTrades();
-            const openTrades = trades.filter(trade => trade.status === 'OPEN');
-            const lastTradeIndex = trades.findIndex(trade => trade.id === this.positionManager.activePosition.id);
+            const lastTradeIndex = trades.findIndex(trade =>
+                trade.status === 'OPEN' &&
+                trade.id === this.positionManager.activePosition.id
+            );
 
             if (lastTradeIndex >= 0) {
                 await this.tracker.tradeHistoryManager.updateTrade(lastTradeIndex, {
@@ -667,16 +845,13 @@ class TradeExecutor {
             }
         }
 
-        // Clear active position
         this.positionManager.activePosition = null;
-
-        console.log(`Position closed with ${pnl.toFixed(2)}% PnL`.green);
+        console.log(`${this.tracker.symbol}: Position closed with ${pnl.toFixed(2)}% PnL`.green);
     }
 
     async closeSpecificPosition(positionId, reason, price) {
-        console.log(`\nClosing specific position: ${positionId} - ${reason}`.yellow);
+        console.log(`${this.tracker.symbol}: Closing specific position: ${positionId} - ${reason}`.yellow);
 
-        // Find the trade by ID
         if (!this.tracker || !this.tracker.tradeHistoryManager) {
             return {
                 success: false,
@@ -702,11 +877,9 @@ class TradeExecutor {
             };
         }
 
-        // Calculate PnL
         const pnl = this.calculateTradePnL(trade, price);
         const exitTime = Date.now();
 
-        // Update the trade
         await this.tracker.tradeHistoryManager.updateTrade(tradeIndex, {
             status: 'CLOSED',
             exitPrice: price,
@@ -715,13 +888,12 @@ class TradeExecutor {
             exitTime
         });
 
-        // If this was the active position, clear it
         if (this.positionManager.activePosition &&
             this.positionManager.activePosition.id === positionId) {
             this.positionManager.activePosition = null;
         }
 
-        console.log(`Position ${positionId} closed with ${pnl.toFixed(2)}% PnL`.green);
+        console.log(`${this.tracker.symbol}: Position ${positionId} closed with ${pnl.toFixed(2)}% PnL`.green);
 
         return {
             success: true,
@@ -733,7 +905,7 @@ class TradeExecutor {
     }
 
     async closeAllPositions(reason, price) {
-        console.log(`\nClosing all positions: ${reason}`.yellow);
+        console.log(`${this.tracker.symbol}: Closing all positions: ${reason}`.yellow);
 
         if (!this.tracker || !this.tracker.tradeHistoryManager) {
             return {
@@ -776,10 +948,9 @@ class TradeExecutor {
             totalPnL += pnl;
         }
 
-        // Clear active position
         this.positionManager.activePosition = null;
 
-        console.log(`Closed ${closedPositions.length} positions with total PnL: ${totalPnL.toFixed(2)}%`.green);
+        console.log(`${this.tracker.symbol}: Closed ${closedPositions.length} positions with total PnL: ${totalPnL.toFixed(2)}%`.green);
 
         return {
             success: true,
@@ -800,47 +971,22 @@ class TradeExecutor {
     }
 
     logTradePlan(position) {
-        console.log('\nTrade Plan:'.cyan);
+        console.log(`\n${this.tracker.symbol} Trade Plan:`.cyan);
         console.log(`Direction: ${position.direction}`.cyan);
-        console.log(`Size: $${position.size.toFixed(2)}`.cyan);
+        console.log(`Size: ${position.size.toFixed(2)}`.cyan);
         console.log(`Leverage: ${position.leverage}x`.cyan);
-        console.log(`Entry: $${position.entryPrice.toFixed(2)}`.cyan);
-        console.log(`Stop Loss: $${position.stopLoss.toFixed(2)}`.cyan);
-        console.log(`Take Profit: $${position.takeProfit.toFixed(2)}`.cyan);
+        console.log(`Entry: ${position.entryPrice.toFixed(2)}`.cyan);
+        console.log(`Stop Loss: ${position.stopLoss.toFixed(2)}`.cyan);
+        console.log(`Take Profit: ${position.takeProfit.toFixed(2)}`.cyan);
 
-        // Calculate risk metrics
         const riskAmount = Math.abs(position.entryPrice - position.stopLoss) * position.size;
         const potentialProfit = Math.abs(position.takeProfit - position.entryPrice) * position.size;
         const riskRewardRatio = potentialProfit / riskAmount;
 
         console.log('\nRisk Metrics:'.yellow);
-        console.log(`Risk Amount: $${riskAmount.toFixed(2)}`.yellow);
-        console.log(`Potential Profit: $${potentialProfit.toFixed(2)}`.yellow);
+        console.log(`Risk Amount: ${riskAmount.toFixed(2)}`.yellow);
+        console.log(`Potential Profit: ${potentialProfit.toFixed(2)}`.yellow);
         console.log(`Risk/Reward Ratio: ${riskRewardRatio.toFixed(2)}`.yellow);
-    }
-
-    getStatusReport() {
-        if (!this.positionManager.activePosition) {
-            return {
-                status: 'NO_POSITION',
-                message: 'No active position'
-            };
-        }
-
-        const position = this.positionManager.activePosition;
-        const duration = Date.now() - position.timestamp;
-        const durationHours = (duration / (1000 * 60 * 60)).toFixed(1);
-
-        return {
-            status: 'IN_POSITION',
-            direction: position.direction,
-            size: position.size,
-            leverage: position.leverage,
-            entryPrice: position.entryPrice,
-            stopLoss: position.stopLoss,
-            takeProfit: position.takeProfit,
-            duration: `${durationHours}h`
-        };
     }
 
     getTradeHistory() {
@@ -879,34 +1025,6 @@ class TradeExecutor {
             return `${diffMins}m`;
         }
     }
-
-    printPerformanceReport() {
-        const closedTrades = this.tradeHistory.filter(t => t.status === 'CLOSED');
-
-        if (closedTrades.length === 0) {
-            console.log('\nNo closed trades yet'.gray);
-            return;
-        }
-
-        const totalPnL = closedTrades.reduce((sum, t) => sum + t.pnl, 0);
-        const winningTrades = closedTrades.filter(t => t.pnl > 0);
-        const losingTrades = closedTrades.filter(t => t.pnl < 0);
-        const winRate = (winningTrades.length / closedTrades.length) * 100;
-
-        const avgWin = winningTrades.length > 0 ?
-            winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length : 0;
-        const avgLoss = losingTrades.length > 0 ?
-            losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length : 0;
-
-        console.log('\nPerformance Report:'.cyan);
-        console.log(`Total Trades: ${closedTrades.length}`.cyan);
-        console.log(`Winning Trades: ${winningTrades.length}`.green);
-        console.log(`Losing Trades: ${losingTrades.length}`.red);
-        console.log(`Win Rate: ${winRate.toFixed(2)}%`.cyan);
-        console.log(`Average Win: ${avgWin.toFixed(2)}%`.green);
-        console.log(`Average Loss: ${avgLoss.toFixed(2)}%`.red);
-        console.log(`Total PnL: ${totalPnL.toFixed(2)}%`.cyan);
-    }
 }
 
 // =============== SIGNAL GENERATOR ===============
@@ -915,7 +1033,6 @@ class SignalGenerator {
         const signals = {};
         let volumeConfirmed = false;
 
-        // Calculate technical indicators for each timeframe
         for (const [interval, data] of Object.entries(timeframes)) {
             const marketData = data.getData();
             const fibLevels = TechnicalAnalysis.calculateFibonacciLevels(marketData.prices);
@@ -932,18 +1049,16 @@ class SignalGenerator {
                 fibonacci: fibAnalysis
             };
 
-            if (signals[interval].volume.increasing) {
+            if (signals[interval].volume && signals[interval].volume.increasing) {
                 volumeConfirmed = true;
             }
         }
 
-        // Check for exit signals if in position
         if (currentPosition) {
             const exitSignal = this.checkExitSignals(price, signals, currentPosition);
             if (exitSignal) return exitSignal;
         }
 
-        // Generate entry signals using VWMA crossovers and RSI
         return this.generateEntrySignal(price, signals, volumeConfirmed);
     }
 
@@ -961,7 +1076,6 @@ class SignalGenerator {
                     reason: 'Overbought conditions on both timeframes'
                 };
             }
-            // Add MA crossover exit
             if (!above15mMA && !above1hMA) {
                 return {
                     signal: 'CLOSE_LONG',
@@ -977,7 +1091,6 @@ class SignalGenerator {
                     reason: 'Oversold conditions on both timeframes'
                 };
             }
-            // Add MA crossover exit
             if (above15mMA && above1hMA) {
                 return {
                     signal: 'CLOSE_SHORT',
@@ -998,10 +1111,8 @@ class SignalGenerator {
         const fib15m = signals['15m'].fibonacci;
         const fib1h = signals['1h'].fibonacci;
 
-        // Strong buy signal
         if (above15mMA && above1hMA && volumeConfirmed) {
             if (rsi15m < 70 && rsi1h < 70) {
-                // Check if price is near a Fibonacci support level
                 const nearSupport = (fib15m?.priceDeviation < 1 && fib15m?.nearestLevel?.ratio < 0.5) ||
                     (fib1h?.priceDeviation < 1 && fib1h?.nearestLevel?.ratio < 0.5);
 
@@ -1015,21 +1126,8 @@ class SignalGenerator {
             }
         }
 
-        // Strong sell signal
         if (!above15mMA && !above1hMA && volumeConfirmed) {
             if (rsi15m > 30 && rsi1h > 30) {
-                return {
-                    signal: 'STRONG_SELL',
-                    confidence: 'HIGH',
-                    reason: 'Price below both MAs with volume confirmation'
-                };
-            }
-        }
-
-        // Potential buy signal - 15m above, 1h below (potential upward reversal)
-        if (!above15mMA && !above1hMA && volumeConfirmed) {
-            if (rsi15m > 30 && rsi1h > 30) {
-                // Check if price is near a Fibonacci resistance level
                 const nearResistance = (fib15m?.priceDeviation < 1 && fib15m?.nearestLevel?.ratio > 0.5) ||
                     (fib1h?.priceDeviation < 1 && fib1h?.nearestLevel?.ratio > 0.5);
 
@@ -1043,7 +1141,6 @@ class SignalGenerator {
             }
         }
 
-        // Potential sell signal - 15m below, 1h above (potential downward reversal)
         if (!above15mMA && above1hMA && volumeConfirmed) {
             if (rsi15m > 30) {
                 return {
@@ -1054,7 +1151,6 @@ class SignalGenerator {
             }
         }
 
-        // Oversold conditions - potential buy opportunity
         if (rsi15m <= 30 && rsi1h <= 30) {
             return {
                 signal: 'WATCH_BUY',
@@ -1063,7 +1159,6 @@ class SignalGenerator {
             };
         }
 
-        // Overbought conditions - potential sell opportunity
         if (rsi15m >= 70 && rsi1h >= 70) {
             return {
                 signal: 'WATCH_SELL',
@@ -1072,7 +1167,6 @@ class SignalGenerator {
             };
         }
 
-        // No clear signal
         return {
             signal: 'NEUTRAL',
             confidence: 'LOW',
@@ -1083,33 +1177,34 @@ class SignalGenerator {
 
 // =============== SIGNAL HISTORY MANAGER ===============
 class SignalHistoryManager {
-    constructor() {
-        this.historyFile = path.join(__dirname, 'signal_history.json');
+    constructor(pair) {
+        this.pair = pair;
+        this.historyFile = path.join(__dirname, `signal_history_${pair}.json`);
         this.signals = [];
-        this.maxSignals = 1000; // Store the last 1000 signals
+        this.maxSignals = 1000;
     }
 
     async initialize() {
         try {
             const data = await fs.readFile(this.historyFile, 'utf8');
             this.signals = JSON.parse(data);
-            console.log(`Loaded ${this.signals.length} historical signals`);
+            console.log(`Loaded ${this.signals.length} historical signals for ${this.pair}`);
         } catch (error) {
             if (error.code === 'ENOENT') {
-                // File doesn't exist yet, start with empty history
                 await this.saveSignals();
-                console.log('Created new signal history file');
+                console.log(`Created new signal history file for ${this.pair}`);
             } else {
-                console.error('Error loading signal history:', error);
+                console.error(`Error loading signal history for ${this.pair}:`, error);
             }
         }
     }
 
     async saveSignals() {
         try {
-            //await fs.writeFile(this.historyFile, JSON.stringify(this.signals, null, 2));
+            // Comment out to prevent file operations during demo
+            // await fs.writeFile(this.historyFile, JSON.stringify(this.signals, null, 2));
         } catch (error) {
-            console.error('Error saving signal history:', error);
+            console.error(`Error saving signal history for ${this.pair}:`, error);
         }
     }
 
@@ -1122,27 +1217,17 @@ class SignalHistoryManager {
             reason: signal.reason,
             price: price,
             volatility: marketState.volatility,
-            technical: this.captureMarketData()
+            pair: this.pair
         };
 
-        // Add to in-memory array
         this.signals.push(signalRecord);
 
-        // Keep only the most recent signals
         if (this.signals.length > this.maxSignals) {
             this.signals = this.signals.slice(-this.maxSignals);
         }
 
-        // Save to disk
         await this.saveSignals();
-
         return signalRecord;
-    }
-
-    captureMarketData() {
-        // This will be implemented in the FuturesTracker class
-        // to capture relevant technical data
-        return {};
     }
 
     getRecentSignals(limit = 50) {
@@ -1153,14 +1238,12 @@ class SignalHistoryManager {
         return this.signals;
     }
 
-    // Filter signals by type (e.g., "BUY", "SELL", etc.)
     getSignalsByType(type, limit = 50) {
         return this.signals
             .filter(signal => signal.signal.includes(type))
             .slice(-limit);
     }
 
-    // Get signals that occurred within a time range
     getSignalsByTimeRange(startTime, endTime) {
         return this.signals.filter(signal => {
             const signalTime = new Date(signal.timestamp).getTime();
@@ -1168,9 +1251,7 @@ class SignalHistoryManager {
         });
     }
 
-    // Get signal accuracy statistics
     getSignalStats() {
-        // Group signals by type
         const buySignals = this.signals.filter(s =>
             s.signal.includes('BUY') || s.signal.includes('LONG'));
         const sellSignals = this.signals.filter(s =>
@@ -1185,9 +1266,11 @@ class SignalHistoryManager {
     }
 }
 
+// =============== TRADE HISTORY MANAGER ===============
 class TradeHistoryManager {
-    constructor() {
-        this.historyFile = path.join(__dirname, 'trade_history.json');
+    constructor(pair) {
+        this.pair = pair;
+        this.historyFile = path.join(__dirname, `trade_history_${pair}.json`);
         this.trades = [];
     }
 
@@ -1195,13 +1278,12 @@ class TradeHistoryManager {
         try {
             const data = await fs.readFile(this.historyFile, 'utf8');
             this.trades = JSON.parse(data);
-            console.log(`Loaded ${this.trades.length} historical trades`);
+            console.log(`Loaded ${this.trades.length} historical trades for ${this.pair}`);
         } catch (error) {
             if (error.code === 'ENOENT') {
-                // File doesn't exist yet, start with empty history
                 await this.saveTrades();
             } else {
-                console.error('Error loading trade history:', error);
+                console.error(`Error loading trade history for ${this.pair}:`, error);
             }
         }
     }
@@ -1210,19 +1292,22 @@ class TradeHistoryManager {
         try {
             await fs.writeFile(this.historyFile, JSON.stringify(this.trades, null, 2));
         } catch (error) {
-            console.error('Error saving trade history:', error);
+            console.error(`Error saving trade history for ${this.pair}:`, error);
         }
     }
 
     async addTrade(trade) {
         const tradeWithTimestamp = {
             ...trade,
+            id: trade.id || `${this.pair}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            pair: this.pair,
             timestamp: trade.timestamp || Date.now(),
             entryTime: new Date(trade.timestamp || Date.now()).toISOString(),
             exitTime: trade.exitTime ? new Date(trade.exitTime).toISOString() : null
         };
         this.trades.push(tradeWithTimestamp);
         await this.saveTrades();
+        return tradeWithTimestamp;
     }
 
     async updateTrade(index, updates) {
@@ -1272,30 +1357,23 @@ class TradeHistoryManager {
         const losingTrades = closedTrades.filter(t => t.pnl < 0);
         const breakEvenTrades = closedTrades.filter(t => t.pnl === 0);
 
-        // Calculate total PnL
         const totalPnL = closedTrades.reduce((sum, t) => sum + t.pnl, 0);
-
-        // Calculate win rate
         const winRate = (winningTrades.length / closedTrades.length) * 100;
 
-        // Calculate average win and loss
         const avgWin = winningTrades.length > 0 ?
             winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length : 0;
         const avgLoss = losingTrades.length > 0 ?
             losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length : 0;
 
-        // Calculate largest win and loss
         const largestWin = winningTrades.length > 0 ?
             Math.max(...winningTrades.map(t => t.pnl)) : 0;
         const largestLoss = losingTrades.length > 0 ?
             Math.min(...losingTrades.map(t => t.pnl)) : 0;
 
-        // Calculate profit factor
         const totalWins = winningTrades.reduce((sum, t) => sum + t.pnl, 0);
         const totalLosses = Math.abs(losingTrades.reduce((sum, t) => sum + t.pnl, 0));
         const profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
 
-        // Calculate average trade duration
         const tradesWithDuration = closedTrades.filter(t => t.entryTime && t.exitTime);
         const avgTradeDuration = tradesWithDuration.length > 0 ?
             tradesWithDuration.reduce((sum, t) => {
@@ -1303,7 +1381,6 @@ class TradeHistoryManager {
                 return sum + duration;
             }, 0) / tradesWithDuration.length : 0;
 
-        // Calculate max drawdown (simplified)
         let maxDrawdown = 0;
         let peak = 0;
         let runningTotal = 0;
@@ -1344,51 +1421,49 @@ class TradeHistoryManager {
 
 // =============== MAIN TRACKER CLASS ===============
 class FuturesTracker {
-    constructor(symbol = CONFIG.SYMBOL) {
+    constructor(symbol) {
         this.symbol = symbol;
         this.timeframes = {};
         this.lastSignal = { signal: 'NEUTRAL', confidence: 'LOW', reason: 'Initializing...' };
 
-        // Initialize timeframes
         for (const [interval] of Object.entries(CONFIG.TIMEFRAMES)) {
             this.timeframes[interval] = new MarketData(interval);
         }
 
-        // Initialize components
         this.positionManager = new PositionManager();
         this.tradeExecutor = new TradeExecutor(this.positionManager);
         this.rateLimiter = new RateLimiter(CONFIG.SYSTEM.API_RATE_LIMIT);
         this.currentPrice = null;
         this.tradeExecutor.tracker = this;
-        this.signalHistoryManager = new SignalHistoryManager();
-        this.tradeHistoryManager = new TradeHistoryManager();
+        this.signalHistoryManager = new SignalHistoryManager(symbol);
+        this.tradeHistoryManager = new TradeHistoryManager(symbol);
     }
 
     async start() {
         try {
-            console.log('Starting Futures Trading Bot...'.green);
+            console.log(`Starting Futures Trading Bot for ${this.symbol}...`.green);
             await this.fetchHistoricalData();
             this.startWebSocket();
             this.startUpdates();
             await this.signalHistoryManager.initialize();
             await this.tradeHistoryManager.initialize();
         } catch (error) {
-            console.error('Failed to start tracker:'.red, error);
-            process.exit(1);
+            console.error(`Failed to start tracker for ${this.symbol}:`.red, error);
+            throw error;
         }
     }
 
     async fetchHistoricalData() {
-        console.log('Fetching historical data...'.yellow);
+        console.log(`Fetching historical data for ${this.symbol}...`.yellow);
         try {
             await Promise.all(
                 Object.entries(this.timeframes).map(([interval]) =>
                     this.fetchIntervalData(interval)
                 )
             );
-            console.log('Historical data loaded successfully'.green);
+            console.log(`Historical data loaded successfully for ${this.symbol}`.green);
         } catch (error) {
-            throw new TradingError('Historical data fetch failed', 'FETCH_ERROR', true);
+            throw new TradingError(`Historical data fetch failed for ${this.symbol}`, 'FETCH_ERROR', true);
         }
     }
 
@@ -1413,7 +1488,7 @@ class FuturesTracker {
             });
         } catch (error) {
             throw new TradingError(
-                `Failed to fetch ${interval} data: ${error.message}`,
+                `Failed to fetch ${interval} data for ${this.symbol}: ${error.message}`,
                 'INTERVAL_FETCH_ERROR',
                 true
             );
@@ -1421,16 +1496,18 @@ class FuturesTracker {
     }
 
     startWebSocket() {
-        console.log('Initializing WebSocket connection...'.yellow);
+        console.log(`Initializing WebSocket connection for ${this.symbol}...`.yellow);
         const streams = Object.keys(this.timeframes)
-            .map(interval => `${this.symbol}@kline_${interval}`)
+            .map(interval => `${this.symbol.toLowerCase()}@kline_${interval}`)
             .join('/');
 
-        const ws = new WebSocket(
-            `wss://stream.binance.com:9443/stream?streams=${streams}`
-        );
+        const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+        const ws = new WebSocket(wsUrl);
 
-        ws.on('open', () => console.log('WebSocket Connected'.green));
+        // Store WebSocket reference
+        globalWebSocket.set(this.symbol, ws);
+
+        ws.on('open', () => console.log(`WebSocket Connected for ${this.symbol}`.green));
 
         ws.on('message', (data) => {
             try {
@@ -1439,17 +1516,17 @@ class FuturesTracker {
                     this.handleKline(message.data.k);
                 }
             } catch (error) {
-                console.error('WebSocket message error:'.red, error);
+                console.error(`WebSocket message error for ${this.symbol}:`.red, error);
             }
         });
 
         ws.on('close', () => {
-            console.log('WebSocket disconnected, reconnecting...'.yellow);
+            console.log(`WebSocket disconnected for ${this.symbol}, reconnecting...`.yellow);
             setTimeout(() => this.startWebSocket(), CONFIG.SYSTEM.RETRY_DELAY);
         });
 
         ws.on('error', (error) => {
-            console.error('WebSocket error:'.red, error);
+            console.error(`WebSocket error for ${this.symbol}:`.red, error);
         });
     }
 
@@ -1464,9 +1541,8 @@ class FuturesTracker {
         }
 
         this.currentPrice = price;
-        this.checkForSignals(); // Check signals on every price update
+        this.checkForSignals();
 
-        // Check position status
         if (this.positionManager.activePosition) {
             if (this.positionManager.checkStopLoss(price)) {
                 this.tradeExecutor.closePosition('Stop Loss hit', price);
@@ -1485,15 +1561,15 @@ class FuturesTracker {
             this.positionManager.activePosition
         );
 
-        // Store the last signal
         this.lastSignal = signal;
 
-        // Save signal to history
         if (this.signalHistoryManager) {
             this.signalHistoryManager.addSignal(signal, this.currentPrice, marketState);
         }
 
-        if (signal.confidence !== 'LOW') {
+        // Only execute trades on valid signals with proper conditions
+        if (this.tradeExecutor.shouldTrade(signal, marketState)) {
+            console.log(`${this.symbol}: Valid trading signal detected - ${signal.signal}`.green);
             this.tradeExecutor.executeTrade(signal, this.currentPrice, marketState);
         }
     }
@@ -1510,164 +1586,70 @@ class FuturesTracker {
         };
     }
 
-    formatPrice(price) {
-        return price ? `$${price.toFixed(2)}` : 'N/A';
-    }
+    getDashboardData() {
+        const positionStatus = this.positionManager.activePosition ? {
+            status: 'IN_POSITION',
+            direction: this.positionManager.activePosition.direction,
+            size: this.positionManager.activePosition.size,
+            entryPrice: this.positionManager.activePosition.entryPrice,
+            stopLoss: this.positionManager.activePosition.stopLoss,
+            takeProfit: this.positionManager.activePosition.takeProfit,
+            leverage: this.positionManager.activePosition.leverage,
+            duration: this.calculatePositionDuration()
+        } : { status: 'NO_POSITION', message: 'No active position' };
 
-    formatPercentage(value) {
-        return value ? `${value.toFixed(2)}%` : 'N/A';
-    }
+        return {
+            pair: this.symbol,
+            price: this.currentPrice,
+            signal: this.lastSignal,
+            timeframes: Object.fromEntries(
+                Object.entries(this.timeframes).map(([interval, data]) => {
+                    const { prices, volumes } = data.getData();
+                    const fibLevels = TechnicalAnalysis.calculateFibonacciLevels(prices);
 
-    printData() {
-        console.clear();
-        console.log(`${this.symbol} Futures Analysis:`.bold);
-        if (this.currentPrice != null) {
-            console.log(`Current Price: $${this.currentPrice.toFixed(2)}`.green);
-        } else {
-            console.log('Current Price: N/A'.yellow);
-        }
-        console.log('\nTrading Signal:');
-        console.log(`Signal: ${this.lastSignal.signal}`);
-        console.log(`Confidence: ${this.lastSignal.confidence}`);
-        console.log(`Reason: ${this.lastSignal.reason}`);
-
-        // Print timeframe analysis
-        Object.entries(this.timeframes).forEach(([interval, data]) => {
-            const { prices, volumes } = data.getData();
-            const vwma = TechnicalAnalysis.calculateVWMA(prices, volumes, data.period);
-            const rsi = TechnicalAnalysis.calculateRSI(prices);
-            const volatility = TechnicalAnalysis.calculateVolatility(prices);
-            const volumeAnalysis = TechnicalAnalysis.analyzeVolume(volumes);
-            const fibLevels = TechnicalAnalysis.calculateFibonacciLevels(prices);
-            const fibAnalysis = TechnicalAnalysis.analyzeFibonacciSignals(this.currentPrice, fibLevels);
-
-            console.log(`\n${interval} Analysis:`);
-            console.log(`VWMA(${data.period}): $${vwma.toFixed(2)}`);
-            console.log(`RSI: ${rsi.toFixed(2)}%`);
-            console.log(`Volatility: ${volatility.toFixed(2)}%`);
-            console.log(`Volume Ratio: ${volumeAnalysis.ratio.toFixed(2)}`);
-            console.log(`Price/VWMA: ${this.currentPrice > vwma ? 'ABOVE ▲' : 'BELOW ▼'}`);
-            console.log('Fibonacci Levels:');
-            console.log(`Trend: ${fibAnalysis.trend}`);
-            console.log(`Nearest Level: ${fibAnalysis.nearestLevel ? `${(fibAnalysis.nearestLevel.ratio * 100).toFixed(1)}% at $${fibAnalysis.nearestLevel.price.toFixed(2)}` : 'N/A'}`);
-            console.log(`Support: ${fibAnalysis.support ? `${(fibAnalysis.support.ratio * 100).toFixed(1)}% at $${fibAnalysis.support.price.toFixed(2)}` : 'N/A'}`);
-            console.log(`Resistance: ${fibAnalysis.resistance ? `${(fibAnalysis.resistance.ratio * 100).toFixed(1)}% at $${fibAnalysis.resistance.price.toFixed(2)}` : 'N/A'}`);
-        });
-
-        // Print position status
-        console.log('\nPosition Status:');
-        if (this.positionManager.activePosition) {
-            const pos = this.positionManager.activePosition;
-            const sizeStr = (typeof pos.size === 'number' && !isNaN(pos.size)) ? pos.size.toFixed(2) : 'N/A';
-            const entryStr = (typeof pos.entryPrice === 'number' && !isNaN(pos.entryPrice)) ? pos.entryPrice.toFixed(2) : 'N/A';
-            const slStr = (typeof pos.stopLoss === 'number' && !isNaN(pos.stopLoss)) ? pos.stopLoss.toFixed(2) : 'N/A';
-            const tpStr = (typeof pos.takeProfit === 'number' && !isNaN(pos.takeProfit)) ? pos.takeProfit.toFixed(2) : 'N/A';
-            const levStr = (typeof pos.leverage === 'number' && !isNaN(pos.leverage)) ? pos.leverage : 'N/A';
-            const dirStr = pos.direction || 'N/A';
-            const pnl = this.positionManager.calculatePnL(this.currentPrice);
-            const duration = this.calculatePositionDuration();
-            console.log(`Type: ${dirStr}`);
-            console.log(`Size: $${sizeStr}`);
-            console.log(`Entry: $${entryStr}`);
-            console.log(`Stop Loss: $${slStr}`);
-            console.log(`Take Profit: $${tpStr}`);
-            console.log(`Leverage: ${levStr}x`);
-            console.log(`Current PnL: ${typeof pnl === 'number' && !isNaN(pnl) ? pnl.toFixed(2) : 'N/A'}%${pnl >= 0 ? '▲' : '▼'}`);
-            console.log(`Duration: ${duration}`);
-        } else {
-            console.log('No active position');
-        }
-
-        // Print performance report
-        console.log('\nPerformance Report:');
-        if (this.tradeHistoryManager && typeof this.tradeHistoryManager.getTradeStatistics === 'function') {
-            const stats = this.tradeHistoryManager.getTradeStatistics();
-            console.log(`Total Trades: ${stats.totalTrades}`);
-            console.log(`Win Rate: ${stats.winRate.toFixed(2)}%`);
-            console.log(`Average Win: ${stats.avgWin.toFixed(2)}%`);
-            console.log(`Average Loss: ${stats.avgLoss.toFixed(2)}%`);
-            console.log(`Total PnL: ${stats.totalPnL.toFixed(2)}%`);
-
-            if (stats.bestTrade) {
-                console.log(`Best Trade:`);
-                console.log(`PnL: ${stats.bestTrade.pnl.toFixed(2)}%`);
-                console.log(`Date: ${new Date(stats.bestTrade.entryTime).toLocaleString()}`);
-            }
-
-            if (stats.worstTrade) {
-                console.log(`Worst Trade:`);
-                console.log(`PnL: ${stats.worstTrade.pnl.toFixed(2)}%`);
-                console.log(`Date: ${new Date(stats.worstTrade.entryTime).toLocaleString()}`);
-            }
-        } else {
-            console.log('No closed trades yet');
-        }
+                    return [interval, {
+                        vwma: TechnicalAnalysis.calculateVWMA(prices, volumes, data.period),
+                        rsi: TechnicalAnalysis.calculateRSI(prices),
+                        volatility: TechnicalAnalysis.calculateVolatility(prices),
+                        volume: TechnicalAnalysis.analyzeVolume(volumes),
+                        fibonacci: TechnicalAnalysis.analyzeFibonacciSignals(this.currentPrice, fibLevels)
+                    }];
+                })
+            ),
+            position: positionStatus.status === 'IN_POSITION' ? {
+                ...positionStatus,
+                size: typeof positionStatus.size === 'number' ? Number(positionStatus.size) : 0,
+                pnl: this.positionManager.calculatePnL(this.currentPrice)
+            } : positionStatus,
+            performance: this.tradeExecutor.getTradeHistory(),
+            signalHistory: this.signalHistoryManager.getRecentSignals(20),
+            performanceStats: this.tradeHistoryManager.getTradeStatistics(),
+            openPositions: this.tradeHistoryManager.getAllTrades()
+                .filter(trade => trade.status === 'OPEN')
+                .map(trade => ({
+                    ...trade,
+                    currentPnL: this.tradeExecutor.calculateTradePnL(trade, this.currentPrice)
+                }))
+        };
     }
 
     startUpdates() {
         setInterval(() => {
             this.checkForSignals();
-            this.printData();
 
-            // Send data to dashboard
-            if (io) {
-                const positionStatus = this.positionManager.activePosition ? {
-                    status: 'IN_POSITION',
-                    direction: this.positionManager.activePosition.direction,
-                    size: this.positionManager.activePosition.size,
-                    entryPrice: this.positionManager.activePosition.entryPrice,
-                    stopLoss: this.positionManager.activePosition.stopLoss,
-                    takeProfit: this.positionManager.activePosition.takeProfit,
-                    leverage: this.positionManager.activePosition.leverage,
-                    duration: this.calculatePositionDuration()
-                } : { status: 'NO_POSITION', message: 'No active position' };
+            // Send data to dashboard for this specific pair
+            const dashboardData = this.getDashboardData();
+            io.to(this.symbol).emit('marketUpdate', dashboardData);
 
-                const dashboardData = {
-                    price: this.currentPrice,
-                    signal: this.lastSignal,
-                    timeframes: Object.fromEntries(
-                        Object.entries(this.timeframes).map(([interval, data]) => {
-                            const { prices, volumes } = data.getData();
-                            const fibLevels = TechnicalAnalysis.calculateFibonacciLevels(prices);
-
-                            return [interval, {
-                                vwma: TechnicalAnalysis.calculateVWMA(prices, volumes, data.period),
-                                rsi: TechnicalAnalysis.calculateRSI(prices),
-                                volatility: TechnicalAnalysis.calculateVolatility(prices),
-                                volume: TechnicalAnalysis.analyzeVolume(volumes),
-                                fibonacci: TechnicalAnalysis.analyzeFibonacciSignals(this.currentPrice, fibLevels)
-                            }];
-                        })
-                    ),
-                    position: positionStatus.status === 'IN_POSITION' ? {
-                        ...positionStatus,
-                        size: typeof positionStatus.size === 'number' ? Number(positionStatus.size) : 0,
-                        pnl: this.positionManager.calculatePnL(this.currentPrice)
-                    } : positionStatus,
-                    performance: this.tradeExecutor.getTradeHistory(),
-                    signalHistory: this.signalHistoryManager.getRecentSignals(20),
-                    // Enhanced performance statistics
-                    performanceStats: this.tradeHistoryManager.getTradeStatistics(),
-                    // All open positions with real-time PnL
-                    openPositions: this.tradeHistoryManager.getAllTrades()
-                        .filter(trade => trade.status === 'OPEN')
-                        .map(trade => ({
-                            ...trade,
-                            currentPnL: this.tradeExecutor.calculateTradePnL(trade, this.currentPrice)
-                        }))
-                };
-
-                io.emit('marketUpdate', dashboardData);
-            }
         }, CONFIG.SYSTEM.UPDATE_INTERVAL);
     }
 
     calculatePositionDuration() {
-        if (!this.positionManager.activePosition || !this.positionManager.activePosition.entryTime) {
+        if (!this.positionManager.activePosition || !this.positionManager.activePosition.timestamp) {
             return 'N/A';
         }
 
-        const entryTime = new Date(this.positionManager.activePosition.entryTime);
+        const entryTime = new Date(this.positionManager.activePosition.timestamp);
         const now = new Date();
         const diffMs = now - entryTime;
         const diffMins = Math.floor(diffMs / 1000 / 60);
@@ -1681,14 +1663,21 @@ class FuturesTracker {
     }
 }
 
+// =============== SERVER STARTUP ===============
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Dashboard available at http://localhost:${PORT}`);
+    console.log(`Multi-Pair Trading Dashboard available at http://localhost:${PORT}`.green);
+    console.log(`Available endpoints:`.cyan);
+    console.log(`  GET  /pairs - Get available trading pairs`.cyan);
+    console.log(`  POST /start-pair/:pair - Start tracking a pair`.cyan);
+    console.log(`  POST /stop-pair/:pair - Stop tracking a pair`.cyan);
+    console.log(`  GET  /active-pairs - Get currently tracked pairs`.cyan);
+    console.log(`  POST /trade/:pair - Place manual trade`.cyan);
+    console.log(`  POST /close/:pair - Close position for pair`.cyan);
+    console.log(`  POST /close/:pair/:id - Close specific position`.cyan);
+    console.log(`  POST /close-all/:pair - Close all positions for pair`.cyan);
+    console.log(`\nTo start trading, open your browser and select a pair from the dashboard.`.yellow);
 });
 
-
-
-
-// Start the bot
-const tracker = new FuturesTracker();
-tracker.start().catch(console.error);
+// System ready message
+console.log(`System ready. Visit http://localhost:${PORT} to start trading.`.green);
